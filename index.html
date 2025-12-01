@@ -2499,7 +2499,7 @@ async function runAlgoCompareDebug(){
       bfOv
     );
 
-    // ----------------------------------------------------------
+        // ----------------------------------------------------------
     // 3）直線距離（全組合せ・ゼロAPI）も自動実行
     // ----------------------------------------------------------
     try {
@@ -2553,7 +2553,6 @@ async function runAlgoCompareDebug(){
       console.error('[auto-linear] 直線距離計算でエラー', err2);
       panel.textContent += '\n[直線距離計算エラー] ' + (err2.message || err2) + '\n';
     }
-
 }
 
 function ensureProjections() {
