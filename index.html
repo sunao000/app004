@@ -1425,6 +1425,7 @@ function summaryStats(arr){
 async function showRouteLegSummary(){
   const mass = 75, flat = 18;
   const outDiv = document.getElementById('legSummaryAll');
+  if (!outDiv) return;
   outDiv.innerHTML = '';
   for (const key of ['shortest','fastest','slope','arterial']){
     const feat = routeData[key];
