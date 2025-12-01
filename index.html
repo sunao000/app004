@@ -2444,14 +2444,11 @@ async function runAlgoCompareDebug(){
   const panel = $('algoComparePanel');
   panel.textContent = '';
 
-  // ★ 関数全体の計測開始時間
   const tAll0 = performance.now();
-
-  // ここに結果をためる（後でCSVで使う）
   window.__algoCompareRows = [];
 
   try {
-    // 必須チェック
+
     if (!routeData || !routeData.fastest) {
       panel.textContent = '先に「休憩場所検索」でルート＋POIを生成してください。';
       return;
@@ -2461,42 +2458,37 @@ async function runAlgoCompareDebug(){
       return;
     }
 
-    // 累積（距離/時間/エネ）準備
     ensureProjections();
     const cumTotals = window.__cumTotals;
 
-    // Start/Goal の抽出
-    const start = pts.find(p => p.type === 'start') || pts[0];
-    const goal  = pts.find(p => p.type === 'goal')  || pts[pts.length - 1];
+    const start = pts.find(p=>p.type==='start') || pts[0];
+    const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
     const profile = 'cycling-road';
 
     panel.textContent += '====== アルゴリズム比較デバッグ ======\n\n';
 
     // ----------------------------------------------------------
-    // 1）ビームサーチ（ゼロAPI）
+    // 1）ビームサーチ
     // ----------------------------------------------------------
     panel.textContent += '--- ビームサーチ（幅3・ゼロAPI） ---\n';
 
     const orsBeforeBeam = API_USED.orsTotal;
     const ovpBeforeBeam = API_USED.overpassTotal;
 
-    // ★ ビームサーチの時間計測
-    const tBeam0  = performance.now();
-    const beamList = runBeamSearchOnce(restGroups, cumTotals);  // 同期想定
-    const tBeam1  = performance.now();
-    const beamMs  = tBeam1 - tBeam0;
+    const tBeam0 = performance.now();
+    const beamList = runBeamSearchOnce(restGroups, cumTotals);
+    const tBeam1 = performance.now();
+    const beamMs = tBeam1 - tBeam0;
 
-    const beamOrs = API_USED.orsTotal      - orsBeforeBeam;
+    const beamOrs = API_USED.orsTotal - orsBeforeBeam;
     const beamOv  = API_USED.overpassTotal - ovpBeforeBeam;
 
     panel.textContent += `処理時間: ${beamMs.toFixed(1)} ms\n`;
     panel.textContent += `ORS呼び出し: ${beamOrs} 回\n`;
     panel.textContent += `Overpass呼び出し: ${beamOv} 回\n\n`;
 
-    // 上位3件を表示（showAlgoListInPanel 側で上位3件に絞ってもOK）
     showAlgoListInPanel(panel, beamList, 'beam3');
 
-    // CSV に記録（上位3件だけ）
     pushAlgoResultsForCsv(
       'beam3',
       'ビームサーチ（幅3）',
@@ -2507,20 +2499,19 @@ async function runAlgoCompareDebug(){
     );
 
     // ----------------------------------------------------------
-    // 2）総当たり（API多め）
+    // 2）総当たり
     // ----------------------------------------------------------
     panel.textContent += '\n--- 総当たり（API多め・高精度） ---\n';
 
     const orsBeforeBF = API_USED.orsTotal;
     const ovpBeforeBF = API_USED.overpassTotal;
 
-    // ★ 総当たりの時間計測
-    const tBF0  = performance.now();
+    const tBF0 = performance.now();
     const bfList = await runBruteforceOnce(start, goal, restGroups, profile);
-    const tBF1  = performance.now();
-    const bfMs  = tBF1 - tBF0;
+    const tBF1 = performance.now();
+    const bfMs = tBF1 - tBF0;
 
-    const bfOrs = API_USED.orsTotal      - orsBeforeBF;
+    const bfOrs = API_USED.orsTotal - orsBeforeBF;
     const bfOv  = API_USED.overpassTotal - ovpBeforeBF;
 
     panel.textContent += `処理時間: ${bfMs.toFixed(1)} ms\n`;
@@ -2528,10 +2519,8 @@ async function runAlgoCompareDebug(){
     panel.textContent += `Overpass呼び出し: ${bfOv} 回\n`;
     panel.textContent += `組合せ数: ${bfList.length} 件\n\n`;
 
-    // 上位3件を表示
     showAlgoListInPanel(panel, bfList, 'bruteforce');
 
-    // CSV 記録（総当たりは全組合せを保存）
     pushAlgoResultsForCsv(
       'bruteforce',
       '総当たり',
@@ -2542,58 +2531,56 @@ async function runAlgoCompareDebug(){
     );
 
     // ----------------------------------------------------------
-    // 3）直線距離（全組合せ・ゼロAPI）も自動実行
+    // 3）直線距離
     // ----------------------------------------------------------
-    try {
-      panel.textContent += '\n--- 直線距離（全組み合わせ・ゼロAPI） ---\n';
+    panel.textContent += '\n--- 直線距離（全組み合わせ・ゼロAPI） ---\n';
 
+    try {
       const orsBeforeLin = API_USED.orsTotal;
       const ovpBeforeLin = API_USED.overpassTotal;
 
       const tLin0 = performance.now();
 
-      // 各トリガーごとの上位POIリスト（配列の配列）
-      const groups = topPoisPerTriggerForLinear(5);  // 各トリガー最大5件
-
-      // ★ 全組合せを「アルゴ用行オブジェクト」に変換（距離計算＆ソート済み）
+      const groups = topPoisPerTriggerForLinear(5);
       const linearRows = buildLinearAlgoRows(start, goal, groups);
 
       const tLin1 = performance.now();
       const linMs = tLin1 - tLin0;
 
-      const linOrs = API_USED.orsTotal      - orsBeforeLin;
+      const linOrs = API_USED.orsTotal - orsBeforeLin;
       const linOv  = API_USED.overpassTotal - ovpBeforeLin;
 
-      // 別処理で使いたい場合に備えて保持（任意）
       window.__linearResults = linearRows;
 
-      // パネルに概要表示
       panel.textContent += `組合せ数: ${linearRows.length} 件\n`;
-      panel.textContent += `処理時間: ${linMs.toFixed(1)} ms\n`;
-      panel.textContent += `ORS呼び出し: ${linOrs} 回\n`;
-      panel.textContent += `Overpass呼び出し: ${linOv} 回\n\n`;
+      panel.textContent += `処理時間: ${linMs.toFixed(1)} ms\n\n`;
 
-      // ★ 上位3件だけ画面に出す（他アルゴと同じ showAlgoListInPanel を利用）
-      const linearTop3 = linearRows.slice(0, 3);
-      showAlgoListInPanel(panel, linearTop3, 'linear');
+      showAlgoListInPanel(panel, linearRows.slice(0, 3), 'linear');
 
-      // ★ アルゴ比較用CSVには全組合せを記録
       pushAlgoResultsForCsv(
         'linear',
         '直線距離（全組合せ）',
-        linearRows,   // ← 全件
+        linearRows,
         linMs,
         linOrs,
         linOv
       );
 
-      // ★ もし linear 専用のカードUI＋CSVボタンも使うなら（任意）
-      // renderLinearResults(linearRows);
-
-    } catch (err2) {
+    } catch (err2){
       console.error('[auto-linear] 直線距離計算でエラー', err2);
       panel.textContent += '\n[直線距離計算エラー] ' + (err2.message || err2) + '\n';
     }
+
+    // ----------------------------------------------------------
+    // 全体時間
+    // ----------------------------------------------------------
+    const totalMs = performance.now() - tAll0;
+    panel.textContent += `\n====== 全アルゴリズム処理時間: ${totalMs.toFixed(1)} ms ======\n`;
+
+  } catch(err){
+    console.error('[runAlgoCompareDebug] エラー', err);
+    panel.textContent += '\n[エラー] ' + (err.message || err);
+  }
 }
 
 function ensureProjections() {
