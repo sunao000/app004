@@ -33,17 +33,9 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 <div id="controls">
   <input id="placeInput" placeholder="地名・住所" style="width:260px">
   <button id="searchBtn">検索</button>
-  <button id="locBtn">現在地追加</button>
   <button id="drawBtn">休憩場所検索</button>
   <button id="solveCombBtn">ルート検索</button>
 
-
-  <label>プロファイル
-    <select id="profileSelect">
-      <option value="cycling-road" selected>ロードバイク</option>
-      <option value="cycling-regular">自転車（一般）</option>
-    </select>
-  </label>
 </div>
 
 <!-- ▼▼ ここに追加：地名検索候補リスト ▼▼ -->
@@ -874,10 +866,6 @@ if (sm) {
     nomSearch(val);
     $('placeInput').value = ''; // 入力欄リセット
   };
-
-  $('locBtn').onclick=()=>navigator.geolocation.getCurrentPosition(
-      p=>addPoint({name:'現在地',lat:p.coords.latitude,lon:p.coords.longitude}),
-      ()=>alert('現在地取得失敗'));
   $('drawBtn').onclick=drawRoutes;
 
   $('solveCombBtn').onclick = async () => {
@@ -988,7 +976,7 @@ if (algo === 'bruteforce'){
       return;
     }
 
-    const profile = $('profileSelect').value; // ORSプロファイル（cycling-road 等）
+    const profile = 'cycling-road'; // ORSプロファイル（cycling-road 等）
     const results = [];
 
     // 逐次でAPI負荷を抑えつつ評価
@@ -1193,7 +1181,7 @@ async function drawRoutes(){
   pts.forEach(p=>markerLayer.addLayer(L.marker([p.lat,p.lon],{icon:ICONS[p.type||'via']}).bindTooltip(p.name)));
 
   const coords=pts.map(p=>[p.lon,p.lat]);
-  const profile = $('profileSelect').value;
+  const profile = 'cycling-road';
   const base={coordinates:coords,elevation:true,extra_info:['steepness']};
 
   try{
@@ -2178,7 +2166,7 @@ header.innerHTML = `
             ? r.picksByTrigger.filter(Boolean)
             : (r.picks || []);
           const wps = [start, ...picksArray, goal].map(p=>({lat:p.lat, lon:p.lon, name:p.name || 'POI'}));
-          const profile = $('profileSelect').value;
+          const profile = 'cycling-road';
           const out = await routeLegStatsForWaypoints(wps, profile);
           feature = out.feature;
         }
@@ -2702,7 +2690,7 @@ async function runAlgoCompareDebug(){
     // Start/Goal の抽出
     const start = pts.find(p=>p.type==='start') || pts[0];
     const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
-    const profile = $('profileSelect').value;
+    const profile = 'cycling-road';
 
     panel.textContent += '====== アルゴリズム比較デバッグ ======\n\n';
 
