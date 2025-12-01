@@ -2063,46 +2063,188 @@ function enumerateAllOnePerTrigger(groups, hardCap=200000){
 }
 
 // 直線距離アルゴリズム用に、全組合せを「行オブジェクト」に変換して返すヘルパー
+// 直線距離アルゴリズム用に、全組合せを「行オブジェクト」に変換して返すヘルパー
 function buildLinearAlgoRows(start, goal, groups, hardCap = 200000) {
-  // enumerateAllOnePerTrigger は [ [p,p...], [p,p...] ... ] だけ返すので、
-  // ここで km や idxes などを計算して「1行」の形にしてあげる
   const combos = enumerateAllOnePerTrigger(groups, hardCap);
 
   const rows = combos.map(picks => {
-    // 合計直線距離（m → km）
     const meters = comboLinearDistanceMeters(start, picks, goal);
     const km = meters / 1000;
 
-    // 各トリガーごとの「何番目のPOIか」（インデックス配列）
     const idxes = picks.map((p, gi) => {
       const idx = groups[gi].indexOf(p);
       return idx >= 0 ? idx : null;
     });
 
     return {
-      // アルゴリズム比較用の共通フィールド
-      score: km,          // ★評価値：合計直線距離（短いほど良い）
-      rawScore: meters,   // m 単位でも残しておく
-
-      // showAlgoListInPanel / CSV が期待している構造
+      score: km,
+      rawScore: meters,
       stats: {
-        dist: [km],       // 距離だけ1要素入れておく（stdDev がコケないように）
+        dist: [km],
         time: [],
         energy: []
       },
-      picks,              // 選ばれた POI の配列
+      picks,
       picksByTrigger: picks,
-
-      // linear 専用フィールド（renderLinearResults / downloadLinearCsv 用）
       km,
       idxes
     };
   });
 
-  // 総合スコア（距離）昇順にソート
   rows.sort((a, b) => (a.score ?? Infinity) - (b.score ?? Infinity));
   return rows;
 }
+
+// ======================================================
+// ★ 追加：2点間の区間コストを ORS(API) で計算するヘルパー
+//   - from, to : {lat, lon, name?...} 形式のオブジェクト
+//   - profile  : 'cycling-road' など
+//   - 返り値   : { total, distKm, timeMin }
+// ======================================================
+async function calcLegCostWithApi(from, to, profile){
+  if (!from || !to) {
+    throw new Error('calcLegCostWithApi: from/to が不正です');
+  }
+
+  const wps = [
+    {
+      lat: from.lat ?? from.latitude  ?? from.y,
+      lon: from.lon ?? from.longitude ?? from.x
+    },
+    {
+      lat: to.lat   ?? to.latitude    ?? to.y,
+      lon: to.lon   ?? to.longitude   ?? to.x
+    }
+  ];
+
+  // 既に使っている ORS ヘルパーを流用
+  const out = await routeLegStatsForWaypoints(wps, profile);
+  const feature = out?.feature;
+  const summary = feature?.properties?.summary || {};
+
+  const distM = Number(summary.distance) || 0;   // m
+  const timeS = Number(summary.duration) || 0;   // s
+
+  const distKm  = distM / 1000;
+  const timeMin = timeS / 60;
+
+  // ★ コスト定義：ひとまず距離(km)＋時間(分)
+  const total = distKm + timeMin;
+
+  return { total, distKm, timeMin };
+}
+
+// Viterbi（API利用版）
+// start, goal: {lat, lon} 形式
+// restGroups: [ [POI, POI, ...], [POI, ...], ... ] 各トリガーごとの候補POI
+// profile: 'cycling-road' など
+async function runViterbiOnce_API(start, goal, restGroups, profile) {
+
+  const T = Array.isArray(restGroups) ? restGroups.length : 0;
+  if (!Number.isInteger(T) || T <= 0) {
+    console.warn('[Viterbi] restGroups が空 / 不正です:', restGroups);
+    return [];
+  }
+
+  const Klist = restGroups.map(g => Array.isArray(g) ? g.length : 0);
+  if (Klist.some(k => !Number.isInteger(k) || k <= 0)) {
+    console.warn('[Viterbi] 候補0件のトリガーがあります:', Klist);
+    return [];
+  }
+
+  const dp   = [];
+  const prev = [];
+  for (let t = 0; t < T; t++) {
+    dp[t]   = new Array(Klist[t]).fill(Infinity);
+    prev[t] = new Array(Klist[t]).fill(-1);
+  }
+
+  // start → 最初のトリガー
+  for (let k = 0; k < Klist[0]; k++) {
+    const poi  = restGroups[0][k];
+    const legCost = await calcLegCostWithApi(start, poi, profile);
+    dp[0][k] = legCost.total;
+  }
+
+  // t-1 → t
+  for (let t = 1; t < T; t++) {
+    const curGroup  = restGroups[t];
+    const prevGroup = restGroups[t - 1];
+
+    for (let j = 0; j < Klist[t]; j++) {
+      const toPoi = curGroup[j];
+
+      let bestCost = Infinity;
+      let bestIdx  = -1;
+
+      for (let i = 0; i < Klist[t - 1]; i++) {
+        const fromPoi = prevGroup[i];
+        if (!Number.isFinite(dp[t - 1][i])) continue;
+
+        const legCost = await calcLegCostWithApi(fromPoi, toPoi, profile);
+        const cand    = dp[t - 1][i] + legCost.total;
+
+        if (cand < bestCost) {
+          bestCost = cand;
+          bestIdx  = i;
+        }
+      }
+
+      dp[t][j]   = bestCost;
+      prev[t][j] = bestIdx;
+    }
+  }
+
+  // 最後のトリガー → goal
+  const lastT = T - 1;
+  let bestFinalCost = Infinity;
+  let bestFinalIdx  = -1;
+
+  for (let k = 0; k < Klist[lastT]; k++) {
+    if (!Number.isFinite(dp[lastT][k])) continue;
+
+    const poi     = restGroups[lastT][k];
+    const legCost = await calcLegCostWithApi(poi, goal, profile);
+    const cand    = dp[lastT][k] + legCost.total;
+
+    if (cand < bestFinalCost) {
+      bestFinalCost = cand;
+      bestFinalIdx  = k;
+    }
+  }
+
+  if (bestFinalIdx < 0 || !Number.isFinite(bestFinalCost)) {
+    console.warn('[Viterbi] ゴールまで到達するルートが見つかりませんでした');
+    return [];
+  }
+
+  // 経路復元
+  const picks = new Array(T);
+  let curIdx  = bestFinalIdx;
+
+  for (let t = lastT; t >= 0; t--) {
+    picks[t] = restGroups[t][curIdx];
+    curIdx   = prev[t][curIdx];
+
+    if (t > 0 && curIdx < 0) {
+      console.warn('[Viterbi] prev の辻褄が合いません t=', t);
+      break;
+    }
+  }
+
+  return [{
+    score: bestFinalCost,
+    rawScore: bestFinalCost,
+    stats: {
+      dist: [],
+      time: [],
+      energy: []
+    },
+    picks,
+    picksByTrigger: picks
+  }];
+}
+
 
 // 表示とCSV出力
 function renderLinearResults(rows){
@@ -2381,174 +2523,6 @@ async function viterbiRouteCost(p1, p2, profile){
   const energy = energyFromRoute(res); // kJ計算
 
   return { dist, time, energy };
-}
-
-// ======================================================
-// ★ 追加：2点間の区間コストを ORS(API) で計算するヘルパー
-//   - from, to : {lat, lon, name?...} 形式のオブジェクト
-//   - profile  : 'cycling-road' など
-//   - 返り値   : { total, distKm, timeMin }
-// ======================================================
-async function calcLegCostWithApi(from, to, profile){
-  if (!from || !to) {
-    throw new Error('calcLegCostWithApi: from/to が不正です');
-  }
-
-  const wps = [
-    {
-      lat: from.lat ?? from.latitude  ?? from.y,
-      lon: from.lon ?? from.longitude ?? from.x
-    },
-    {
-      lat: to.lat   ?? to.latitude    ?? to.y,
-      lon: to.lon   ?? to.longitude   ?? to.x
-    }
-  ];
-
-  // 既に使っている ORS ヘルパーを流用
-  // （showLinearComboRoute でも使っていた routeLegStatsForWaypoints）
-  const out = await routeLegStatsForWaypoints(wps, profile);
-  const feature = out?.feature;
-  const summary = feature?.properties?.summary || {};
-
-  const distM = Number(summary.distance) || 0;   // m
-  const timeS = Number(summary.duration) || 0;   // s
-
-  const distKm  = distM / 1000;
-  const timeMin = timeS / 60;
-
-  // ★ここが「コストの定義」
-  //   とりあえず「距離(km)＋時間(分)」の素朴な足し算にしておく
-  //   （気に入らなければ後で係数をいじればOK）
-  const total = distKm + timeMin;
-
-  return { total, distKm, timeMin };
-}
-  
-// Viterbi（API利用版）
-// start, goal: {lat, lon} 形式
-// restGroups: [ [POI, POI, ...], [POI, ...], ... ] 各トリガーごとの候補POI
-// profile: 'cycling-road' など
-async function runViterbiOnce_API(start, goal, restGroups, profile) {
-
-  // 1. トリガー数を安全に取得
-  const T = Array.isArray(restGroups) ? restGroups.length : 0;
-
-  if (!Number.isInteger(T) || T <= 0) {
-    console.warn('[Viterbi] restGroups が空 / 不正です:', restGroups);
-    return [];
-  }
-
-  // 2. 各トリガーごとの候補数を確認
-  const Klist = restGroups.map(g => Array.isArray(g) ? g.length : 0);
-  if (Klist.some(k => !Number.isInteger(k) || k <= 0)) {
-    console.warn('[Viterbi] 候補0件のトリガーがあります:', Klist);
-    return [];
-  }
-
-  // 3. dp / prev 配列を手動で作成（Array.from を使わない）
-  //    dp[t][k]   : t番目トリガーで k番目POIを選んだ時の最小コスト
-  //    prev[t][k] : 1つ前のトリガーでのインデックス
-  const dp   = [];
-  const prev = [];
-
-  for (let t = 0; t < T; t++) {
-    dp[t]   = new Array(Klist[t]).fill(Infinity);
-    prev[t] = new Array(Klist[t]).fill(-1);
-  }
-
-  // 4. start → 最初のトリガーの各POI までのコストで初期化
-  for (let k = 0; k < Klist[0]; k++) {
-    const poi  = restGroups[0][k];
-
-    // ★ ここは「区間コストを API で取る」既存ヘルパーに合わせて変更
-    // 例: calcLegCostWithApi(start, poi, profile) など
-    const legCost = await calcLegCostWithApi(start, poi, profile);
-
-    // total: 「距離 + 時間 + エネルギー」など、最終スコアとして使いたいもの
-    dp[0][k] = legCost.total;
-  }
-
-  // 5. Viterbi 本体：トリガー t-1 → t への遷移をすべて試して最小コストを更新
-  for (let t = 1; t < T; t++) {
-    const curGroup  = restGroups[t];
-    const prevGroup = restGroups[t - 1];
-
-    for (let j = 0; j < Klist[t]; j++) {
-      const toPoi = curGroup[j];
-
-      let bestCost = Infinity;
-      let bestIdx  = -1;
-
-      for (let i = 0; i < Klist[t - 1]; i++) {
-        const fromPoi = prevGroup[i];
-
-        if (!Number.isFinite(dp[t - 1][i])) continue; // そもそも到達不能ならスキップ
-
-        const legCost = await calcLegCostWithApi(fromPoi, toPoi, profile);
-        const cand    = dp[t - 1][i] + legCost.total;
-
-        if (cand < bestCost) {
-          bestCost = cand;
-          bestIdx  = i;
-        }
-      }
-
-      dp[t][j]   = bestCost;
-      prev[t][j] = bestIdx;
-    }
-  }
-
-  // 6. 最後のトリガー → goal まで足して、最終的に一番良いルートを決める
-  const lastT = T - 1;
-  let bestFinalCost = Infinity;
-  let bestFinalIdx  = -1;
-
-  for (let k = 0; k < Klist[lastT]; k++) {
-    if (!Number.isFinite(dp[lastT][k])) continue;
-
-    const poi     = restGroups[lastT][k];
-    const legCost = await calcLegCostWithApi(poi, goal, profile);
-    const cand    = dp[lastT][k] + legCost.total;
-
-    if (cand < bestFinalCost) {
-      bestFinalCost = cand;
-      bestFinalIdx  = k;
-    }
-  }
-
-  if (bestFinalIdx < 0 || !Number.isFinite(bestFinalCost)) {
-    console.warn('[Viterbi] ゴールまで到達するルートが見つかりませんでした');
-    return [];
-  }
-
-  // 7. prev をたどって選択された POI 列を復元
-  const picks = new Array(T);
-  let curIdx  = bestFinalIdx;
-
-  for (let t = lastT; t >= 0; t--) {
-    picks[t] = restGroups[t][curIdx];
-    curIdx   = prev[t][curIdx];
-
-    if (t > 0 && curIdx < 0) {
-      console.warn('[Viterbi] prev の辻褄が合いません t=', t);
-      break;
-    }
-  }
-
-  // 8. 既存の beam / bruteforce と同じ形式に揃えて返す
-  return [{
-    score: bestFinalCost,        // 総合スコア（小さいほど良い）
-    rawScore: bestFinalCost,     // 必要に応じて同じ値を入れておく
-    stats: {
-      // TODO: 必要なら「区間ごとに距離/時間/エネを保存」して配列で入れる
-      dist:   [],
-      time:   [],
-      energy: []
-    },
-    picks,
-    picksByTrigger: picks
-  }];
 }
 
 // ▼▼ 総当たりを1回分だけ実行して全結果を返す関数 ▼▼
