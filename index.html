@@ -38,7 +38,7 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 
 </div>
 
-<!-- ▼▼ ここに追加：地名検索候補リスト ▼▼ -->
+<!-- ▼▼ 地名検索候補リスト ▼▼ -->
 <ul id="searchSuggestions"
     style="list-style:none;margin:4px 0;padding:0 8px;background:#fff;
            border:1px solid #ccc;max-height:150px;overflow:auto;">
@@ -111,7 +111,7 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   </details>
 </div>
 
-<!-- ▼▼ ここに追加：休憩地点リスト表示 ▼▼ -->
+<!-- ▼▼ 休憩地点リスト表示 ▼▼ -->
 <div class="section">
   <details open>
     <summary>休憩地点リスト</summary>
@@ -2531,9 +2531,13 @@ async function runAlgoCompareDebug(){
     try {
       panel.textContent += '\n--- 直線距離（全組み合わせ・ゼロAPI） ---\n';
 
-      // 休憩トリガーごとに1件ずつ選ぶ全組み合わせを列挙
-      // （もともと btnCalcLinear が呼んでいた関数を再利用）
-      const linearList = await enumerateAllOnePerTrigger(restGroups);
+      // 休憩トリガーごとの「上位POIリスト（配列の配列）」を作る
+      //   [ [T1のPOI1,POI2,...], [T2のPOI1,POI2,...], ... ]
+      const groups = topPoisPerTriggerForLinear(5);  // 引数5は「各トリガー最大5件」の意味
+
+      // enumerateAllOnePerTrigger に渡すのは restGroups ではなく、上で作った groups
+      // この関数は同期関数なので await は不要
+      const linearList = enumerateAllOnePerTrigger(groups);
 
       // 後でCSV出力や別の分析で使えるようにグローバルに保存
       window.__linearResults = linearList;
