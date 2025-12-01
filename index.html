@@ -2062,6 +2062,49 @@ function enumerateAllOnePerTrigger(groups, hardCap=200000){
   return out;
 }
 
+// 直線距離アルゴリズム用に、全組合せを「行オブジェクト」に変換して返すヘルパー
+function buildLinearAlgoRows(start, goal, groups, hardCap=200000){
+  // enumerateAllOnePerTrigger は [ [p,p...], [p,p...] ... ] だけ返すので、
+  // ここで km や idxes などを計算して「1行」の形にしてあげる
+  const combos = enumerateAllOnePerTrigger(groups, hardCap);
+
+  const rows = combos.map(picks => {
+    // 合計直線距離（m → km）
+    const meters = comboLinearDistanceMeters(start, picks, goal);
+    const km = meters / 1000;
+
+    // 各トリガーごとの「何番目のPOIか」（インデックス配列）
+    const idxes = picks.map((p, gi) => {
+      const idx = groups[gi].indexOf(p);
+      return idx >= 0 ? idx : null;
+    });
+
+    return {
+      // アルゴリズム比較用の共通フィールド
+      score: km,         // ★評価値：合計直線距離（短いほど良い）
+      rawScore: meters,  // m 単位でも残しておく（必要なら）
+
+      // showAlgoListInPanel / CSV 用
+      stats: {           // とりあえず距離だけ入れておく（標準偏差などに使える）
+        dist: [km],
+        time: [],
+        energy: []
+      },
+      picks,             // 選ばれた POI の配列
+      picksByTrigger: picks, // 念のため
+
+      // linear 専用フィールド
+      km,
+      idxes
+    };
+  });
+
+  // 総合スコア（=距離）昇順にソート
+  rows.sort((a, b) => (a.score ?? Infinity) - (b.score ?? Infinity));
+
+  return rows;
+}
+
 // 表示とCSV出力
 function renderLinearResults(rows){
   const cont = document.getElementById('linearList');
@@ -2516,8 +2559,8 @@ async function runAlgoCompareDebug(){
       // [ [T1のPOI1,POI2,...], [T2のPOI1,POI2,...], ... ]
       const groups = topPoisPerTriggerForLinear(5);  // 各トリガー最大5件
 
-      // 各トリガーから1件ずつ選ぶ全組合せを列挙
-      const linearList = enumerateAllOnePerTrigger(groups);
+      // ★ 全組合せを「アルゴ用の行オブジェクト」に変換（距離計算＆ソート込）
+      const linearRows = buildLinearAlgoRows(start, goal, groups);
 
       // ★ 時間計測終了
       const tLin1 = performance.now();
@@ -2526,43 +2569,38 @@ async function runAlgoCompareDebug(){
       const linOrs = API_USED.orsTotal      - orsBeforeLin;
       const linOv  = API_USED.overpassTotal - ovpBeforeLin;
 
-      // 後で別処理で使いたい場合に備えて保持
-      window.__linearResults = linearList;
+      // 後で別処理で使いたい場合に備えて保持（任意）
+      window.__linearResults = linearRows;
 
       // パネルに概要表示
-      panel.textContent += `組合せ数: ${linearList.length} 件\n`;
+      panel.textContent += `組合せ数: ${linearRows.length} 件\n`;
       panel.textContent += `処理時間: ${linMs.toFixed(1)} ms\n`;
       panel.textContent += `ORS呼び出し: ${linOrs} 回\n`;
       panel.textContent += `Overpass呼び出し: ${linOv} 回\n\n`;
 
-      // ★ UI には上位3件だけ表示
-      const linearTop3 = linearList.slice(0, 3);
+      // ★ UI には上位3件だけを「アルゴ共通の表示関数」で表示
+      const linearTop3 = linearRows.slice(0, 3);
       showAlgoListInPanel(panel, linearTop3, 'linear');
 
-      // ★ CSV には全組合せを記録
+      // ★ アルゴ比較CSVには全組合せを記録
       pushAlgoResultsForCsv(
         'linear',
         '直線距離（全組合せ）',
-        linearList,   // ← 全件
+        linearRows,   // ← 全件
         linMs,
         linOrs,
         linOv
       );
+
+      // ★ カードUI＋専用CSVボタンも使いたい場合（任意）
+      // （linearListパネルや「直線距離CSVダウンロード」ボタンがあるなら）
+      renderLinearResults(linearRows);
 
     } catch (err2) {
       console.error('[auto-linear] 直線距離計算でエラー', err2);
       panel.textContent += '\n[直線距離計算エラー] ' + (err2.message || err2) + '\n';
     }
 
-    // ★ 関数全体の処理時間を最後に表示
-    const tAll1 = performance.now();
-    const totalMs = tAll1 - tAll0;
-    panel.textContent += `\n====== 全アルゴリズム処理時間: ${totalMs.toFixed(1)} ms ======\n`;
-
-  } catch (err) {
-    console.error('[runAlgoCompareDebug] エラー', err);
-    panel.textContent += '\n[エラー] ' + (err.message || err);
-  }
 }
 
 function ensureProjections() {
