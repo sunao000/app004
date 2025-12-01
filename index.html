@@ -2808,9 +2808,7 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
   if (!Array.isArray(resultList) || !resultList.length) return;
   if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
 
-  // --------------------------------------------
-  // ★ 事前に「総合スコア（ズレ合計）」でソート
-  // --------------------------------------------
+  // --- 総合スコア（ズレ合計）で並び替え ---
   resultList.sort((a, b)=>{
     const sigA = {
       dist: stdDev(a.stats?.dist || []),
@@ -2824,75 +2822,58 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
     };
 
     const scoreA =
-      (Number.isFinite(sigA.dist)   ? sigA.dist   : 0) +
-      (Number.isFinite(sigA.time)   ? sigA.time   : 0) +
-      (Number.isFinite(sigA.energy) ? sigA.energy : 0);
+      (Number.isFinite(sigA.dist)?sigA.dist:0) +
+      (Number.isFinite(sigA.time)?sigA.time:0) +
+      (Number.isFinite(sigA.energy)?sigA.energy:0);
 
     const scoreB =
-      (Number.isFinite(sigB.dist)   ? sigB.dist   : 0) +
-      (Number.isFinite(sigB.time)   ? sigB.time   : 0) +
-      (Number.isFinite(sigB.energy) ? sigB.energy : 0);
+      (Number.isFinite(sigB.dist)?sigB.dist:0) +
+      (Number.isFinite(sigB.time)?sigB.time:0) +
+      (Number.isFinite(sigB.energy)?sigB.energy:0);
 
-    // 小さいほうが良い
     return scoreA - scoreB;
   });
 
-  // --------------------------------------------
-  // ★ 並び替え後の順番で rank を振って CSV用配列に詰める
-  // --------------------------------------------
+  // --- CSVへ格納 ---
   resultList.forEach((r, idx)=>{
     const rank = idx + 1;
 
-    // 各ズレ量
     const sigmaDist   = stdDev(r.stats?.dist || []);
     const sigmaTime   = stdDev(r.stats?.time || []);
     const sigmaEnergy = stdDev(r.stats?.energy || []);
 
-    // 総合スコア = ズレ量の合計
     const scoreCombined =
-      (Number.isFinite(sigmaDist)   ? sigmaDist   : 0) +
-      (Number.isFinite(sigmaTime)   ? sigmaTime   : 0) +
-      (Number.isFinite(sigmaEnergy) ? sigmaEnergy : 0);
+      (Number.isFinite(sigmaDist)?sigmaDist:0) +
+      (Number.isFinite(sigmaTime)?sigmaTime:0) +
+      (Number.isFinite(sigmaEnergy)?sigmaEnergy:0);
 
-    // picks / picksByTrigger がネストしている場合にも対応
     let poiList = (r.picks || r.picksByTrigger || []).filter(Boolean);
-    if (Array.isArray(poiList[0])) {
-      poiList = poiList.flat().filter(Boolean);
-    }
+    if (Array.isArray(poiList[0])) poiList = poiList.flat().filter(Boolean);
 
-    const poiNames = poiList
-      .map(p => p.name || 'POI')
-      .join(' -> ');
+    const poiNames = poiList.map(p => p.name || 'POI').join(' -> ');
 
-    // 緯度経度文字列 "lat,lng | lat,lng | ..." を作成
     const poiLatLngs = poiList
-      .map(p => {
-        const lat = p.lat ?? p.latitude ?? p.latlng?.lat ?? p.center?.lat ?? p.y;
-        const lng = p.lng ?? p.lon ?? p.longitude ?? p.latlng?.lng ?? p.center?.lng ?? p.x;
-        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return '';
-        return `${lat.toFixed(6)},${lng.toFixed(6)}`;
-      })
-      .filter(s => s)     // 空文字を除外
+      .map(p => `${(p.lat??p.latitude)?.toFixed(6)},${(p.lon??p.lng)?.toFixed(6)}`)
+      .filter(Boolean)
       .join(' | ');
 
-    // ★ ここで「さっき計算した値」をちゃんと使う
     window.__algoCompareRows.push({
       algo: algoCode,
       label,
       rank,
-      score:        scoreCombined,          // 総合スコア（小さいほど良い）
-      rawScore:     r.rawScore ?? null,     // 総当たり用に何か持たせているならそのまま
-      sigmaDist:    sigmaDist,
-      sigmaTime:    sigmaTime,
-      sigmaEnergy:  sigmaEnergy,
-      timeMs:       elapsedMs ?? null,
-      orsCalls:     orsCalls ?? null,
-      overpassCalls:overpassCalls ?? null,
+      score: scoreCombined,
+      sigmaDist,
+      sigmaTime,
+      sigmaEnergy,
+      timeMs: elapsedMs ?? null,
+      orsCalls,
+      overpassCalls,
       poiNames,
-      poiLatLngs    // ← CSVで使う用の緯度経度文字列
+      poiLatLngs
     });
   });
 }
+
   
   function showAlgoListInPanel(panel, list, algoCode){
   if (!panel) return;
