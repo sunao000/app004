@@ -2402,6 +2402,9 @@ async function runAlgoCompareDebug(){
   const panel = $('algoComparePanel');
   panel.textContent = '';
 
+  // ★ 関数全体の計測開始時間（追加）
+  const tAll0 = performance.now();
+
   // ここに結果をためる（後でCSVで使う）
   window.__algoCompareRows = [];
 
@@ -2435,12 +2438,12 @@ async function runAlgoCompareDebug(){
     const orsBeforeBeam = API_USED.orsTotal;
     const ovpBeforeBeam = API_USED.overpassTotal;
 
-    const tkBeam = tStart('beamSearch-debug');
-    const beamList = runBeamSearchOnce(restGroups, cumTotals);
-    tEnd(tkBeam);
+    // ★ ここからビームサーチの時間計測に変更（tStart/tEnd, PERFは使わない）
+    const tBeam0  = performance.now();
+    const beamList = runBeamSearchOnce(restGroups, cumTotals);  // 同期関数っぽいので await なし
+    const tBeam1  = performance.now();
+    const beamMs  = tBeam1 - tBeam0;
 
-    const beamPerf = PERF.rows.at(-1);
-    const beamMs   = beamPerf?.ms ?? 0;
     const beamOrs  = API_USED.orsTotal      - orsBeforeBeam;
     const beamOv   = API_USED.overpassTotal - ovpBeforeBeam;
 
@@ -2469,12 +2472,12 @@ async function runAlgoCompareDebug(){
     const orsBeforeBF = API_USED.orsTotal;
     const ovpBeforeBF = API_USED.overpassTotal;
 
-    const tkBF = tStart('bruteforce-debug');
+    // ★ ここも performance.now() で計測
+    const tBF0  = performance.now();
     const bfList = await runBruteforceOnce(start, goal, restGroups, profile);
-    tEnd(tkBF);
+    const tBF1  = performance.now();
+    const bfMs  = tBF1 - tBF0;
 
-    const bfPerf = PERF.rows.at(-1);
-    const bfMs   = bfPerf?.ms ?? 0;
     const bfOrs  = API_USED.orsTotal      - orsBeforeBF;
     const bfOv   = API_USED.overpassTotal - ovpBeforeBF;
 
@@ -2496,7 +2499,7 @@ async function runAlgoCompareDebug(){
       bfOv
     );
 
-        // ----------------------------------------------------------
+    // ----------------------------------------------------------
     // 3）直線距離（全組合せ・ゼロAPI）も自動実行
     // ----------------------------------------------------------
     try {
@@ -2520,7 +2523,11 @@ async function runAlgoCompareDebug(){
       panel.textContent += '\n[直線距離計算エラー] ' + (err2.message || err2) + '\n';
     }
 
+    // ★ 関数全体の処理時間を最後に追加表示
+    const tAll1   = performance.now();
+    const allMs   = tAll1 - tAll0;
     panel.textContent += '\n====== 比較完了 ======\n';
+    panel.textContent += `全体処理時間: ${allMs.toFixed(1)} ms\n`;
 
   } catch (err){
     console.error(err);
