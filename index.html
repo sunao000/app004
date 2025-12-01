@@ -2505,34 +2505,55 @@ async function runAlgoCompareDebug(){
     try {
       panel.textContent += '\n--- 直線距離（全組み合わせ・ゼロAPI） ---\n';
 
+      // ★ ORS / Overpass の呼び出し数の差分を測る（ゼロAPI想定なので基本 0 のはず）
+      const orsBeforeLin = API_USED.orsTotal;
+      const ovpBeforeLin = API_USED.overpassTotal;
+
+      // ★ 処理時間計測開始
+      const tkLin = tStart('linear-debug');
+
       // 休憩トリガーごとの「上位POIリスト（配列の配列）」を作る
       //   [ [T1のPOI1,POI2,...], [T2のPOI1,POI2,...], ... ]
-      const groups = topPoisPerTriggerForLinear(5);  // 引数5は「各トリガー最大5件」の意味
+      const groups = topPoisPerTriggerForLinear(5);  // 各トリガー最大5件
 
-      // enumerateAllOnePerTrigger に渡すのは restGroups ではなく、上で作った groups
-      // この関数は同期関数なので await は不要
+      // 各トリガーから1件ずつ選ぶ全組合せを列挙
       const linearList = enumerateAllOnePerTrigger(groups);
 
-      // 後でCSV出力や別の分析で使えるようにグローバルに保存
+      // ★ 処理時間計測終了
+      tEnd(tkLin);
+      const linPerf = PERF.rows.at(-1);
+      const linMs   = linPerf?.ms ?? 0;
+
+      const linOrs  = API_USED.orsTotal      - orsBeforeLin;
+      const linOv   = API_USED.overpassTotal - ovpBeforeLin;
+
+      // 後で別処理で使いたい場合に備えて保持
       window.__linearResults = linearList;
 
+      // パネル表示
       panel.textContent += `組合せ数: ${linearList.length} 件\n`;
-      panel.textContent += '※直線距離の詳細はデバッグやCSVで利用できます。\n\n';
+      panel.textContent += `処理時間: ${linMs.toFixed(1)} ms\n`;
+      panel.textContent += `ORS呼び出し: ${linOrs} 回\n`;
+      panel.textContent += `Overpass呼び出し: ${linOv} 回\n\n`;
+
+      // ★ 画面のリスト表示（ビーム/総当たりと同じUIで見たい場合）
+      showAlgoListInPanel(panel, linearList, 'linear');
+
+      // ★ CSV にも記録（beam / bruteforce と同じノリ）
+      pushAlgoResultsForCsv(
+        'linear',
+        '直線距離（全組合せ）',
+        linearList,
+        linMs,
+        linOrs,
+        linOv
+      );
+
     } catch (err2) {
       console.error('[auto-linear] 直線距離計算でエラー', err2);
       panel.textContent += '\n[直線距離計算エラー] ' + (err2.message || err2) + '\n';
     }
 
-    // ★ 関数全体の処理時間を最後に追加表示
-    const tAll1   = performance.now();
-    const allMs   = tAll1 - tAll0;
-    panel.textContent += '\n====== 比較完了 ======\n';
-    panel.textContent += `全体処理時間: ${allMs.toFixed(1)} ms\n`;
-
-  } catch (err){
-    console.error(err);
-    panel.textContent += '\n[エラー] ' + (err.message || err);
-  }
 }
 
 function ensureProjections() {
