@@ -1987,6 +1987,31 @@ function updateRestPoiPanel(){
   });
   drawRestBeams();
 }
+  
+// 休憩トリガー ↔ POI を線で結んで可視化する
+function drawRestBeams(){
+  if (!restBeamLayer) return;
+
+  // いったん前回の線を全部消す
+  restBeamLayer.clearLayers();
+
+  if (!Array.isArray(restGroups) || !restGroups.length) return;
+
+  restGroups.forEach(g => {
+    const r = g && g.rest;
+    if (!r || !Array.isArray(g.pois)) return;
+
+    g.pois.forEach(p => {
+      if (!p) return;
+      // トリガー → POI を細い破線で引く
+      const line = L.polyline(
+        [[r.lat, r.lon], [p.lat, p.lon]],
+        { weight: 2, dashArray: '4,4', color: '#999' }
+      );
+      restBeamLayer.addLayer(line);
+    });
+  });
+}
 
 // 組み合わせ表示専用：使用地点だけピンを出す
 function setComboMarkers(start, picksArray, goal){
@@ -2875,21 +2900,24 @@ function injectAlgoDebugButtons(cumTotals){
 }
 
 // 幹線度（大きいほど“幹線っぽい”）
+// ここでは「距離が長くて平均速度が高い＝幹線っぽい」という単純な指標にしています。
 function arterialScore(feature){
-  const sum = feature?.properties?.summary || {};
-  const dist = Number(sum.distance)||0;      // m
-  const time = Number(sum.duration)||1;      // s（0回避）
-  const meanSpeed = dist / time;             // m/s
+  if (!feature || !feature.properties || !feature.properties.summary) {
+    return -Infinity;
+  }
 
-  // "曲がりの少なさ" を step 数の少なさで近似
-  const segs = feature?.properties?.segments || [];
-  let stepsCount = 0;
-  for(const s of segs) stepsCount += (s.steps||[]).length;
+  const sum = feature.properties.summary;
+  const distM = Number(sum.distance) || 0;   // m
+  const timeS = Number(sum.duration) || 1;   // s（0除算を避けるため 1 で保険）
 
-  const turnsPerKm = dist>0 ? (stepsCount/(dist/1000)) : stepsCount;
+  const distKm   = distM / 1000;
+  const timeH    = timeS / 3600;
+  const avgSpeed = distKm / timeH;           // km/h 相当
 
-  const wSpeed = 1.0, wTurns = 0.6;          // 調整OK
-  return (wSpeed*meanSpeed) - (wTurns*turnsPerKm);
+  // ・平均速度が高いほどプラス
+  // ・ある程度の距離があるほどプラス
+  // → 幹線道路を長く走るルートほどスコアが大きくなるイメージ
+  return avgSpeed * distKm;
 }
 
 // 上位3件カードの「この組み合わせでルート表示」から呼ばれる
