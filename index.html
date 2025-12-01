@@ -128,27 +128,6 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   </details>
 </div>
 
-<!-- ▼ 計算時間（簡易プロファイル） -->
-<div class="section">
-  <details open>
-    <summary>計算時間</summary>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0">
-      <label><input id="perfToggle" type="checkbox" checked> 計測ON</label>
-      <button id="perfResetBtn" type="button">リセット</button>
-      <button id="perfExportBtn" type="button">CSV出力</button>
-    </div>
-    <pre id="perfPanel" style="font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;border:1px solid #eee;padding:6px;max-height:220px;overflow:auto"></pre>
-  </details>
-</div>
-
-<div class="section">
-  <details open>
-    <summary>デバッグ（累積・射影）</summary>
-    <div id="dbgCums" style="font-family:ui-monospace,monospace;white-space:pre-wrap;font-size:12px;"></div>
-  </details>
-</div>
-
-
 <!-- 地点リストと地図 -->
 <ul id="pointList"></ul>
 <div id="map"></div>
@@ -164,7 +143,7 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 
 
 <!-- ルート検索アルゴリズム -->
-<!-- 直線距離（全組み合わせ） -->
+<!-- <!-- 直線距離（全組み合わせ） -->
 <div class="section">
   <h3>直線距離（全組み合わせ）</h3>
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
@@ -173,7 +152,7 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   </div>
   <div id="linearSummary" style="font-size:0.9rem;color:#555"></div>
   <div id="linearList" style="font-family:ui-monospace,monospace;white-space:pre;max-height:260px;overflow:auto;border:1px solid #eee;padding:6px"></div>
-</div>
+</div> -->
 
 <div class="section">
   <label>探索アルゴリズム
@@ -671,33 +650,14 @@ function dpSearch(restGroups, cumTotals){
 
   
 /* ===== 超シンプル・プロファイラ ===== */
-const PERF = { on:true, rows:[], max:200 };
-function perfNow(){ return (performance?.now?.() ?? Date.now()); }
-function tStart(name){ return PERF.on ? {name, t0:perfNow()} : null; }
-function tEnd(tok, info){
-  if(!tok) return;
-  const ms = perfNow() - tok.t0;
-  PERF.rows.push({ name: tok.name, ms, info: info||'' });
-  if(PERF.rows.length>PERF.max) PERF.rows.shift();
-  renderPerf();
-}
-function renderPerf(){
-  const el = document.getElementById('perfPanel'); if(!el) return;
-  el.textContent = PERF.rows.slice(-30).map(r=>{
-    const m = r.ms.toFixed(1).padStart(7,' ');
-    return `${m} ms  ${r.name}${r.info?` — ${r.info}`:''}`;
-  }).join('\n') || '(no data)';
-}
-function exportPerfCSV(){
-  const bom=new Uint8Array([0xEF,0xBB,0xBF]);
-  const lines = [['name','ms','info']]
-    .concat(PERF.rows.map(r=>[r.name, r.ms.toFixed(1), r.info]));
-  const csv = lines.map(a=>a.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\r\n');
-  const blob=new Blob([bom,csv],{type:'text/csv;charset=utf-8'});
-  const url=URL.createObjectURL(blob); const a=document.createElement('a');
-  a.href=url; a.download='perf_log.csv'; a.click();
-  setTimeout(()=>URL.revokeObjectURL(url),500);
-}
+// --- PROFILER を無効化 ---
+const PERF = { on:false, rows:[], max:0 };
+
+function perfNow(){ return 0; }
+function tStart(name){ return null; }
+function tEnd(tok, info){}
+function renderPerf(){}
+function exportPerfCSV(){}
 window.addEventListener('DOMContentLoaded', ()=>{
   const on=$('perfToggle'), reset=$('perfResetBtn'), exp=$('perfExportBtn');
   on && (on.onchange=()=>{ PERF.on = on.checked; });
@@ -2467,7 +2427,7 @@ function bindLinearButtonsOnce(){
 }
 
 // 初期化時にバインド
-window.addEventListener('DOMContentLoaded', bindLinearButtonsOnce);
+//window.addEventListener('DOMContentLoaded', bindLinearButtonsOnce);
 
 
 // 休憩トリガーごとに1地点ずつ選ぶ全組み合わせを列挙（上限あり）
@@ -2763,6 +2723,26 @@ async function runAlgoCompareDebug(){
       bfOv
     );
 
+        // ----------------------------------------------------------
+    // 3）直線距離（全組合せ・ゼロAPI）も自動実行
+    // ----------------------------------------------------------
+    try {
+      panel.textContent += '\n--- 直線距離（全組み合わせ・ゼロAPI） ---\n';
+
+      // 休憩トリガーごとに1件ずつ選ぶ全組み合わせを列挙
+      // （もともと btnCalcLinear が呼んでいた関数を再利用）
+      const linearList = await enumerateAllOnePerTrigger(restGroups);
+
+      // 後でCSV出力や別の分析で使えるようにグローバルに保存
+      window.__linearResults = linearList;
+
+      panel.textContent += `組合せ数: ${linearList.length} 件\n`;
+      panel.textContent += '※直線距離の詳細はデバッグやCSVで利用できます。\n\n';
+    } catch (err2) {
+      console.error('[auto-linear] 直線距離計算でエラー', err2);
+      panel.textContent += '\n[直線距離計算エラー] ' + (err2.message || err2) + '\n';
+    }
+
     panel.textContent += '\n====== 比較完了 ======\n';
 
   } catch (err){
@@ -2801,90 +2781,6 @@ function ensureProjections() {
   }
 
   console.log("[ensureProjections] 射影を再計算しました");
-}
-
-function dbgShowCumsAndProjections(){
-  const el = $('dbgCums'); if (!el) return;
-  const t = window.__cumTotals;
-  const counts = (restGroups||[]).map((g,i)=>{
-    const valid = (g?.pois||[]).filter(p=>p && p._proj && Number.isFinite(p._proj.cumD)).length;
-    return `#${i+1}: POI=${(g?.pois||[]).length}, projOK=${valid}`;
-  }).join('\n');
-  el.textContent =
-`cumTotals:
-  D=${t?.D?.toFixed?.(1)} m
-  T=${t?.T?.toFixed?.(1)} s
-  E=${t?.E?.toFixed?.(1)} kJ
-per-trigger candidates:
-${counts || '(none)'}`;
-  console.log("[ensureProjections] 射影を再計算しました");
-  (restGroups||[]).forEach((g,i)=>{
-      const ok = (g?.pois||[]).filter(p=>p && p._proj && Number.isFinite(p._proj.cumD)).length;
-      console.log(`[projOK] trigger#${i+1}: all=${(g?.pois||[]).length}, projOK=${ok}`);
-    });
-}
-
-  
-
-function injectAlgoDebugButtons(cumTotals){
-  // 既に挿入済みならスキップ
-  if (document.getElementById('algoDebugBar')) return;
-  const host = document.getElementById('comboTop3');
-  const bar = document.createElement('div');
-  bar.id = 'algoDebugBar';
-  bar.style.margin = '6px 0 10px';
-  bar.innerHTML = `
-    <div style="display:flex;gap:6px;flex-wrap:wrap">
-      <button id="dbgRunGreedy">デバッグ: 等間隔貪欲</button>
-      <button id="dbgRunBeam">デバッグ: ビームサーチ</button>
-      <button id="dbgClear">クリア</button>
-    </div>
-    <pre id="dbgAlgoLog" style="font-family:ui-monospace,monospace;background:#f8f8f8;border:1px solid #eee;padding:6px;white-space:pre-wrap"></pre>
-  `;
-  host.prepend(bar);
-
-  const logEl = document.getElementById('dbgAlgoLog');
-  const log = (s)=>{ logEl.textContent += s + '\n'; };
-
-  document.getElementById('dbgRunGreedy').onclick = ()=>{
-    const K = 3;
-    const candGroups = greedyTopKCandidates(restGroups, cumTotals, K);
-    const combos = enumerateCombinations(candGroups, K, 60);
-    const scored = combos.map(cmb=>{
-      const ev = evalByCums(restGroups, cmb, cumTotals);
-      return {cmb, score:ev.score, stats:ev.stats};
-    }).sort((a,b)=>a.score-b.score).slice(0,3);
-    log('[GREEDY top3]');
-    scored.forEach((r,i)=>{
-      log(`#${i+1}: score=${r.score.toFixed(4)}  segN=${r.stats.dist.length}`);
-    });
-    showTop3Combos(scored.map(s=>({
-  score:s.score, stats:s.stats, picksByTrigger:s.cmb, picks:s.cmb.filter(Boolean)
-})));
-  };
-
-  document.getElementById('dbgRunBeam').onclick = ()=>{
-    const triggersWithCand = (restGroups||[]).reduce((n,g)=>{
-      const valid=(g?.pois||[]).filter(p=>p && p._proj && Number.isFinite(p._proj.cumD));
-      return n + (valid.length?1:0);
-    },0);
-    const top = beamSearch(restGroups, cumTotals, 3, triggersWithCand, 1e6, true);
-    log('[BEAM top3]');
-    top.forEach((r,i)=>{
-      log(`#${i+1}: score=${r.score.toFixed(4)}  segN=${r.stats.dist.length}`);
-    });
-    top.forEach(t=>t.picks = t.picksByTrigger.filter(Boolean));
-    showTop3Combos(top);
-  };
-
-  document.getElementById('dbgClear').onclick = ()=>{
-    logEl.textContent='';
-    document.getElementById('comboTop3').innerHTML='';
-  };
-  const csvBtn = document.getElementById('dbgAlgoCsv');
-  if (csvBtn) {
-    csvBtn.onclick = downloadAlgoCompareCsv;
-  }
 }
 
 // 幹線度（大きいほど“幹線っぽい”）
