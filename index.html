@@ -2636,6 +2636,13 @@ async function showLinearComboRoute(row){
   setActiveButton(null);
 }
 
+function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls, overpassCalls){
+  if (!Array.isArray(resultList) || !resultList.length) return;
+  if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
+
+  // --------------------------------------------
+  // ★ 追加：事前に総合スコアで並び替え
+  // --------------------------------------------
   resultList.sort((a, b)=>{
     const sigA = {
       dist: stdDev(a.stats?.dist || []),
