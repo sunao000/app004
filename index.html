@@ -2402,7 +2402,7 @@ async function runAlgoCompareDebug(){
   const panel = $('algoComparePanel');
   panel.textContent = '';
 
-  // ★ 関数全体の計測開始時間（追加）
+  // ★ 関数全体の計測開始時間
   const tAll0 = performance.now();
 
   // ここに結果をためる（後でCSVで使う）
@@ -2410,7 +2410,7 @@ async function runAlgoCompareDebug(){
 
   try {
     // 必須チェック
-    if (!routeData.fastest) {
+    if (!routeData || !routeData.fastest) {
       panel.textContent = '先に「休憩場所検索」でルート＋POIを生成してください。';
       return;
     }
@@ -2424,8 +2424,8 @@ async function runAlgoCompareDebug(){
     const cumTotals = window.__cumTotals;
 
     // Start/Goal の抽出
-    const start = pts.find(p=>p.type==='start') || pts[0];
-    const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
+    const start = pts.find(p => p.type === 'start') || pts[0];
+    const goal  = pts.find(p => p.type === 'goal')  || pts[pts.length - 1];
     const profile = 'cycling-road';
 
     panel.textContent += '====== アルゴリズム比較デバッグ ======\n\n';
@@ -2438,27 +2438,27 @@ async function runAlgoCompareDebug(){
     const orsBeforeBeam = API_USED.orsTotal;
     const ovpBeforeBeam = API_USED.overpassTotal;
 
-    // ★ ここからビームサーチの時間計測に変更（tStart/tEnd, PERFは使わない）
+    // ★ ビームサーチの時間計測
     const tBeam0  = performance.now();
-    const beamList = runBeamSearchOnce(restGroups, cumTotals);  // 同期関数っぽいので await なし
+    const beamList = runBeamSearchOnce(restGroups, cumTotals);  // 同期想定
     const tBeam1  = performance.now();
     const beamMs  = tBeam1 - tBeam0;
 
-    const beamOrs  = API_USED.orsTotal      - orsBeforeBeam;
-    const beamOv   = API_USED.overpassTotal - ovpBeforeBeam;
+    const beamOrs = API_USED.orsTotal      - orsBeforeBeam;
+    const beamOv  = API_USED.overpassTotal - ovpBeforeBeam;
 
     panel.textContent += `処理時間: ${beamMs.toFixed(1)} ms\n`;
     panel.textContent += `ORS呼び出し: ${beamOrs} 回\n`;
     panel.textContent += `Overpass呼び出し: ${beamOv} 回\n\n`;
 
-    // 上位3件を表示
+    // 上位3件を表示（showAlgoListInPanel 側で上位3件に絞ってもOK）
     showAlgoListInPanel(panel, beamList, 'beam3');
 
-    // CSV に記録
+    // CSV に記録（上位3件だけ）
     pushAlgoResultsForCsv(
       'beam3',
       'ビームサーチ（幅3）',
-      beamList.slice(0,3),
+      beamList.slice(0, 3),
       beamMs,
       beamOrs,
       beamOv
@@ -2472,14 +2472,14 @@ async function runAlgoCompareDebug(){
     const orsBeforeBF = API_USED.orsTotal;
     const ovpBeforeBF = API_USED.overpassTotal;
 
-    // ★ ここも performance.now() で計測
+    // ★ 総当たりの時間計測
     const tBF0  = performance.now();
     const bfList = await runBruteforceOnce(start, goal, restGroups, profile);
     const tBF1  = performance.now();
     const bfMs  = tBF1 - tBF0;
 
-    const bfOrs  = API_USED.orsTotal      - orsBeforeBF;
-    const bfOv   = API_USED.overpassTotal - ovpBeforeBF;
+    const bfOrs = API_USED.orsTotal      - orsBeforeBF;
+    const bfOv  = API_USED.overpassTotal - ovpBeforeBF;
 
     panel.textContent += `処理時間: ${bfMs.toFixed(1)} ms\n`;
     panel.textContent += `ORS呼び出し: ${bfOrs} 回\n`;
@@ -2489,7 +2489,7 @@ async function runAlgoCompareDebug(){
     // 上位3件を表示
     showAlgoListInPanel(panel, bfList, 'bruteforce');
 
-    // CSV 記録
+    // CSV 記録（総当たりは全組合せを保存）
     pushAlgoResultsForCsv(
       'bruteforce',
       '総当たり',
@@ -2499,7 +2499,7 @@ async function runAlgoCompareDebug(){
       bfOv
     );
 
-       // ----------------------------------------------------------
+    // ----------------------------------------------------------
     // 3）直線距離（全組合せ・ゼロAPI）も自動実行
     // ----------------------------------------------------------
     try {
@@ -2509,22 +2509,22 @@ async function runAlgoCompareDebug(){
       const orsBeforeLin = API_USED.orsTotal;
       const ovpBeforeLin = API_USED.overpassTotal;
 
-      // ★ 処理時間計測開始（他と同じく performance.now を使用）
+      // ★ 直線距離の時間計測
       const tLin0 = performance.now();
 
       // 休憩トリガーごとの「上位POIリスト（配列の配列）」を作る
-      //   [ [T1のPOI1,POI2,...], [T2のPOI1,POI2,...], ... ]
+      // [ [T1のPOI1,POI2,...], [T2のPOI1,POI2,...], ... ]
       const groups = topPoisPerTriggerForLinear(5);  // 各トリガー最大5件
 
       // 各トリガーから1件ずつ選ぶ全組合せを列挙
       const linearList = enumerateAllOnePerTrigger(groups);
 
-      // ★ 処理時間計測終了
+      // ★ 時間計測終了
       const tLin1 = performance.now();
       const linMs = tLin1 - tLin0;
 
-      const linOrs  = API_USED.orsTotal      - orsBeforeLin;
-      const linOv   = API_USED.overpassTotal - ovpBeforeLin;
+      const linOrs = API_USED.orsTotal      - orsBeforeLin;
+      const linOv  = API_USED.overpassTotal - ovpBeforeLin;
 
       // 後で別処理で使いたい場合に備えて保持
       window.__linearResults = linearList;
@@ -2535,27 +2535,34 @@ async function runAlgoCompareDebug(){
       panel.textContent += `ORS呼び出し: ${linOrs} 回\n`;
       panel.textContent += `Overpass呼び出し: ${linOv} 回\n\n`;
 
-      // ★ ① UI には「上位3件」だけを表示
+      // ★ UI には上位3件だけ表示
       const linearTop3 = linearList.slice(0, 3);
       showAlgoListInPanel(panel, linearTop3, 'linear');
 
-      // ★ ② CSV には「全組合せ」を書き込む
+      // ★ CSV には全組合せを記録
       pushAlgoResultsForCsv(
         'linear',
         '直線距離（全組合せ）',
-        linearList,   // ← ここは全件
+        linearList,   // ← 全件
         linMs,
         linOrs,
         linOv
       );
- // ★ ここまで来たら全体の処理時間を表示
-    const tAll1 = performance.now();
-    const totalMs = tAll1 - tAll0;
-    panel.textContent += `\n====== 全アルゴリズム処理時間: ${totalMs.toFixed(1)} ms ======\n`;
+
     } catch (err2) {
       console.error('[auto-linear] 直線距離計算でエラー', err2);
       panel.textContent += '\n[直線距離計算エラー] ' + (err2.message || err2) + '\n';
     }
+
+    // ★ 関数全体の処理時間を最後に表示
+    const tAll1 = performance.now();
+    const totalMs = tAll1 - tAll0;
+    panel.textContent += `\n====== 全アルゴリズム処理時間: ${totalMs.toFixed(1)} ms ======\n`;
+
+  } catch (err) {
+    console.error('[runAlgoCompareDebug] エラー', err);
+    panel.textContent += '\n[エラー] ' + (err.message || err);
+  }
 }
 
 function ensureProjections() {
