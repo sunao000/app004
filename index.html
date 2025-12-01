@@ -132,18 +132,8 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 <ul id="pointList"></ul>
 <div id="map"></div>
 
-<!-- ルート切替ボタン -->
-<div id="routeButtons" class="section">
-  <button id="btnShowShortest">最短ルート表示</button>
-  <button id="btnShowFastest">最速ルート表示</button>
-  <button id="btnShowSlope">勾配考慮ルート表示</button>
-  <!-- ▼ 追加 -->
-  <button id="btnShowArterial">幹線優先ルート表示</button>
-</div>
-
-
 <!-- ルート検索アルゴリズム -->
-<!-- <!-- 直線距離（全組み合わせ） -->
+<!-- 直線距離（全組み合わせ） -->
 <div class="section">
   <h3>直線距離（全組み合わせ）</h3>
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
@@ -152,7 +142,7 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   </div>
   <div id="linearSummary" style="font-size:0.9rem;color:#555"></div>
   <div id="linearList" style="font-family:ui-monospace,monospace;white-space:pre;max-height:260px;overflow:auto;border:1px solid #eee;padding:6px"></div>
-</div> -->
+</div>
 
 <div class="section">
   <label>探索アルゴリズム
@@ -166,7 +156,6 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   <small style="color:#666;margin-left:8px">※総当たりはAPI制限に注意</small>
 </div>
 
-<!-- 探索アルゴリズムの計算時間・API利用状況 -->
 <!-- アルゴリズム比較デバッグ -->
 <div class="section">
   <details open>
@@ -191,104 +180,13 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   </details>
 </div>
 
-<div class="section">
-  <details open>
-    <summary>探索アルゴリズムの計算時間・API利用状況</summary>
-    <div id="algoPerfSummary" style="font-size:0.9rem;color:#555">
-      未実行
-    </div>
-  </details>
-</div>
-
-<!-- 評価ウェイト（整列/直交/トリガー距離） -->
-<div class="section" id="scoreWeightsSection">
-  <details open>
-    <summary>評価ウェイト（整列/直交/トリガー距離）</summary>
-    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-      <label>整列（経路上の累積距離ずれ）
-        <input id="wAlign" type="number" step="0.1" min="0" value="1.0" style="width:86px">
-      </label>
-      <label>直交（経路からの垂直距離）
-        <input id="wPerp" type="number" step="0.1" min="0" value="1.0" style="width:86px">
-      </label>
-      <label>トリガー距離（休憩トリガ点からの距離）
-        <input id="wTrig" type="number" step="0.1" min="0" value="0.5" style="width:86px">
-      </label>
-      <button id="btnWeightsReset" style="margin-left:4px">デフォルトに戻す</button>
-    </div>
-    <small style="color:#666;display:block;margin-top:6px">
-      値が大きいほど<strong>その誤差を強くペナルティ</strong>します（=候補が選ばれにくくなります）。
-      値を0にすると、その軸のペナルティは無効化されます。
-    </small>
-  </details>
-</div>
-
-<!-- ▼▼ スコア指標セレクタを追加 ▼▼ -->
-<div class="section" id="scoreMetricSection">
-  <details open>
-    <summary>スコア指標（どれか1つで評価）</summary>
-    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-      <label>評価する指標
-        <select id="scoreMetricSelect">
-          <option value="distance" selected>距離σ（km）</option>
-          <option value="time">時間σ（分）</option>
-          <option value="energy">エネルギーσ（kJ）</option>
-        </select>
-      </label>
-      <small style="color:#666">※上位3件の「スコア」はここで選んだ1指標の標準偏差です。</small>
-    </div>
-  </details>
-</div>
-
-
 <!-- サマリー -->
 <div id="summary">
   <div id="routeInfo">未計算</div>
   <div id="distanceScore" class="muted"></div>
 </div>
 
-<!-- 区間統計（各ルート） -->
-<div class="section">
-  <h3>区間統計（各ルート）</h3>
-  <div id="legSummaryAll" style="font-size:0.9rem;"></div>
-</div>
-
 <!-- アルゴリズム比較デバッグ用のバーのどこかに追加 -->
-
-  
-<!-- 組み合わせ評価：上位3件 -->
-<div class="section">
-  <h3>最適な休憩組み合わせ（上位3件）</h3>
-  <div id="comboTop3" style="font-size:0.9rem;"></div>
-
-  <!-- ▼ ここから追加：総当たりの全組み合わせ表示＋CSVボタン ▼ -->
-  <details style="margin-top:8px">
-    <summary>総当たり（bruteforce）の全組み合わせ一覧</summary>
-    <div style="margin:6px 0;">
-      <button id="btnDownloadBruteforceCsv" type="button" disabled>
-        Excel 用 CSV ダウンロード（総当たり）
-      </button>
-    </div>
-    <pre id="bruteforceAllList"
-         style="font-family:ui-monospace,monospace;font-size:12px;
-                white-space:pre-wrap;border:1px solid #eee;
-                padding:6px;max-height:260px;overflow:auto;">
-未計算
-    </pre>
-  </details>
-  <!-- ▲ 追加ここまで ▲ -->
-</div>
-
-
-
-<!-- グラフ描画＆ダウンロード -->
-<div id="charts" style="display:none;">
-  <canvas id="energyChart"></canvas>
-</div>
-<div class="section">
-  <button id="btnDownloadTime" disabled>PNG（時間×累積kJ）</button>
-  <button id="btnDownloadDist" disabled>PNG（距離×累積kJ）</button>
-</div>
 
 <script>
 /* ====== 設定 ====== */
@@ -1020,23 +918,6 @@ if (algo === 'dp'){
     animation:150,
     onEnd:()=>{pts=Array.from($('pointList').children).map(li=>pts[li.dataset.idx]);fixType();drawList();}
   });
-
-  $('btnShowShortest').onclick = ()=> toggleSingleRoute('shortest', $('btnShowShortest'));
-  $('btnShowFastest').onclick  = ()=> toggleSingleRoute('fastest',  $('btnShowFastest'));
-  $('btnShowSlope').onclick    = ()=> toggleSingleRoute('slope',    $('btnShowSlope'));
- $('btnShowArterial').onclick = ()=> toggleSingleRoute('arterial', $('btnShowArterial'));
-
-  // グラフダウンロードボタン
-  $('btnDownloadTime').onclick = ()=>{
-    if(!routeData.fastest){alert('まずルート計算してください');return;}
-    const s = buildEnergySeries(routeData.fastest,75,18,true);
-    if(s.labels.length>1) downloadLineChart(s);
-  };
-  $('btnDownloadDist').onclick = ()=>{
-    if(!routeData.fastest){alert('まずルート計算してください');return;}
-    const s = buildEnergySeries(routeData.fastest,75,18,false);
-    if(s.labels.length>1) downloadLineChart(s);
-  };
 });
 
 /* ====== 地点管理 ====== */
@@ -1278,10 +1159,6 @@ setActiveButton(prefer === 'arterial' ? $('btnShowArterial') : $('btnShowFastest
 
     // 区間統計を表示
     await showRouteLegSummary();
-
-    // グラフボタン有効化
-    $('btnDownloadTime').disabled = false;
-    $('btnDownloadDist').disabled = false;
 
   }catch(e){
     console.error(e);
@@ -1569,81 +1446,6 @@ async function showRouteLegSummary(){
       </details>`;
     outDiv.innerHTML += html;
   }
-}
-
-/* ===== グラフ出力 ===== */
-function tempShowChartsContainer(show){
-  const c = document.getElementById('charts');
-  if(show){
-    c.style.display='block';
-    c.style.position='absolute';
-    c.style.left='-99999px';
-    c.style.visibility='hidden';
-  }else{
-    c.removeAttribute('style');
-    c.style.display='none';
-  }
-}
-function prepareCanvasSize(canvas,w,h){
-  canvas.width=w||1600;
-  canvas.height=h||900;
-}
-async function downloadLineChart(obj){
-  tempShowChartsContainer(true);
-  const ec = document.getElementById('energyChart');
-  prepareCanvasSize(ec,1600,900);
-
-  const chart = new Chart(ec,{
-    type:'line',
-    data:{labels:obj.labels,
-          datasets:[{label:obj.ylabel,data:obj.values,borderWidth:2,pointRadius:0}]},
-    options:{
-      animation:false,
-      plugins:{legend:{display:false}},
-      scales:{ x:{title:{display:true,text:obj.xlabel}},
-               y:{title:{display:true,text:obj.ylabel}} }
-    }
-  });
-
-  await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
-
-  ec.toBlob(blob=>{
-    if(blob){
-      const u = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = u; a.download = obj.filename; a.click();
-      setTimeout(()=>{ URL.revokeObjectURL(u); chart.destroy(); tempShowChartsContainer(false); },300);
-    }else{
-      chart.destroy(); tempShowChartsContainer(false);
-    }
-  });
-}
-function buildEnergySeries(feature,mass,flat,byTime=true){
-  const coords = feature.geometry.coordinates;
-  const hasEle = coords[0].length >= 3;
-  const segs   = feature.properties.segments || [];
-  let cumT=0, cumD=0, cumE=0;
-  const labels=[], values=[];
-  for(const s of segs){
-    for(const st of (s.steps||[])){
-      const [i0,i1]=st.way_points||[0,0];
-      const d  = st.distance || 0;
-      const t  = st.duration || 0;
-      const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
-      cumE += energyStepKJ(d,dz,mass,flat);
-      cumD += d;
-      cumT += t;
-      labels.push(byTime? (cumT/60).toFixed(2) : (cumD/1000).toFixed(2));
-      values.push(+cumE.toFixed(1));
-    }
-  }
-  return {
-    labels,
-    values,
-    xlabel: byTime?'時間 (分)':'距離 (km)',
-    ylabel:'累積エネルギー (kJ)',
-    filename: byTime?'energy_over_time.png':'energy_over_distance.png'
-  };
 }
 
 /* ===== Overpass（保守的実装） ===== */
