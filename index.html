@@ -2636,65 +2636,65 @@ async function showLinearComboRoute(row){
   setActiveButton(null);
 }
 
-function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls, overpassCalls){
-  if (!Array.isArray(resultList) || !resultList.length) return;
-  if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
+  resultList.sort((a, b)=>{
+    const sigA = {
+      dist: stdDev(a.stats?.dist || []),
+      time: stdDev(a.stats?.time || []),
+      energy: stdDev(a.stats?.energy || [])
+    };
+    const sigB = {
+      dist: stdDev(b.stats?.dist || []),
+      time: stdDev(b.stats?.time || []),
+      energy: stdDev(b.stats?.energy || [])
+    };
 
-  resultList.forEach((r, idx)=>{
+    const scoreA =
+      (Number.isFinite(sigA.dist) ? sigA.dist : 0) +
+      (Number.isFinite(sigA.time) ? sigA.time : 0) +
+      (Number.isFinite(sigA.energy) ? sigA.energy : 0);
+
+    const scoreB =
+      (Number.isFinite(sigB.dist) ? sigB.dist : 0) +
+      (Number.isFinite(sigB.time) ? sigB.time : 0) +
+      (Number.isFinite(sigB.energy) ? sigB.energy : 0);
+
+    return scoreA - scoreB;  // ★ 昇順（小さいほど良い）
+  });
+    resultList.forEach((r, idx)=>{
     const rank = idx + 1;
 
-    // r.stats.dist/time/energy は showTop3Combos でも使っている構造
     const sig = {
       dist: stdDev(r.stats?.dist || []),
       time: stdDev(r.stats?.time || []),
       energy: stdDev(r.stats?.energy || [])
     };
 
-    // ★ まず picks / picksByTrigger を 1 本の配列にまとめる
-    //    （picksByTrigger が [[POI,POI], [POI,...]] みたいなネストなら平坦化）
+    const scoreCombined =
+      (Number.isFinite(sig.dist)   ? sig.dist   : 0) +
+      (Number.isFinite(sig.time)   ? sig.time   : 0) +
+      (Number.isFinite(sig.energy) ? sig.energy : 0);
+
     let poiList = (r.picks || r.picksByTrigger || []).filter(Boolean);
-    if (Array.isArray(poiList[0]) ) {
-      // [[...], [...]] 形式なら flat() して1次元に
-      poiList = poiList.flat().filter(Boolean);
-    }
+    if (Array.isArray(poiList[0])) poiList = poiList.flat().filter(Boolean);
 
-    // ★ 名称
-    const poiNames = poiList
-      .map(p => p.name || 'POI')
-      .join(' -> ');
+    const poiNames = poiList.map(p => p.name || 'POI').join(' -> ');
 
-    // ★ 緯度経度 "lat,lng | lat,lng | ..." 形式
     const poiLatLngs = poiList
       .map(p => {
-        // 想定されるプロパティを片っ端から拾う
-        const lat =
-          p.lat ??
-          p.latitude ??
-          p.latlng?.lat ??
-          p.center?.lat ??
-          p.y;
-
-        const lng =
-          p.lng ??
-          p.lon ??
-          p.longitude ??
-          p.latlng?.lng ??
-          p.center?.lng ??
-          p.x;
-
+        const lat = p.lat ?? p.latitude ?? p.latlng?.lat ?? p.center?.lat ?? p.y;
+        const lng = p.lng ?? p.lon ?? p.longitude ?? p.latlng?.lng ?? p.center?.lng ?? p.x;
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) return '';
-        // 小数6桁くらいにしておくと見やすい
         return `${lat.toFixed(6)},${lng.toFixed(6)}`;
       })
-      .filter(s => s)
+      .filter(s=>s)
       .join(' | ');
 
     window.__algoCompareRows.push({
-      algo: algoCode,               // 'beam3' / 'bruteforce' 等
-      label,                        // 日本語ラベル
-      rank,                         // 1,2,3...
-      score:        r.score ?? null,    // 最終スコア（小さいほど良い）
-      rawScore:     r.rawScore ?? null, // 総当たり用（あれば）
+      algo: algoCode,
+      label,
+      rank,                        // ★ sort後の順位をそのまま採用
+      score:        scoreCombined, // ★ 総合スコアで格付け
+      rawScore:     (r.rawScore ?? r.score ?? null),
       sigmaDist:    sig.dist,
       sigmaTime:    sig.time,
       sigmaEnergy:  sig.energy,
@@ -2706,7 +2706,7 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
     });
   });
 }
-
+  
   function showAlgoListInPanel(panel, list, tag){
   if (!list || !list.length){
     panel.textContent += `（${tag}）結果なし\n`;
