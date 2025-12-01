@@ -2383,6 +2383,48 @@ async function viterbiRouteCost(p1, p2, profile){
   return { dist, time, energy };
 }
 
+// ======================================================
+// ★ 追加：2点間の区間コストを ORS(API) で計算するヘルパー
+//   - from, to : {lat, lon, name?...} 形式のオブジェクト
+//   - profile  : 'cycling-road' など
+//   - 返り値   : { total, distKm, timeMin }
+// ======================================================
+async function calcLegCostWithApi(from, to, profile){
+  if (!from || !to) {
+    throw new Error('calcLegCostWithApi: from/to が不正です');
+  }
+
+  const wps = [
+    {
+      lat: from.lat ?? from.latitude  ?? from.y,
+      lon: from.lon ?? from.longitude ?? from.x
+    },
+    {
+      lat: to.lat   ?? to.latitude    ?? to.y,
+      lon: to.lon   ?? to.longitude   ?? to.x
+    }
+  ];
+
+  // 既に使っている ORS ヘルパーを流用
+  // （showLinearComboRoute でも使っていた routeLegStatsForWaypoints）
+  const out = await routeLegStatsForWaypoints(wps, profile);
+  const feature = out?.feature;
+  const summary = feature?.properties?.summary || {};
+
+  const distM = Number(summary.distance) || 0;   // m
+  const timeS = Number(summary.duration) || 0;   // s
+
+  const distKm  = distM / 1000;
+  const timeMin = timeS / 60;
+
+  // ★ここが「コストの定義」
+  //   とりあえず「距離(km)＋時間(分)」の素朴な足し算にしておく
+  //   （気に入らなければ後で係数をいじればOK）
+  const total = distKm + timeMin;
+
+  return { total, distKm, timeMin };
+}
+  
 // Viterbi（API利用版）
 // start, goal: {lat, lon} 形式
 // restGroups: [ [POI, POI, ...], [POI, ...], ... ] 各トリガーごとの候補POI
