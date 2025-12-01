@@ -2499,18 +2499,18 @@ async function runAlgoCompareDebug(){
       bfOv
     );
 
-        // ----------------------------------------------------------
+       // ----------------------------------------------------------
     // 3）直線距離（全組合せ・ゼロAPI）も自動実行
     // ----------------------------------------------------------
     try {
       panel.textContent += '\n--- 直線距離（全組み合わせ・ゼロAPI） ---\n';
 
-      // ★ ORS / Overpass の呼び出し数の差分を測る（ゼロAPI想定なので基本 0 のはず）
+      // ORS / Overpass の呼び出し数の差分（基本 0 のはず）
       const orsBeforeLin = API_USED.orsTotal;
       const ovpBeforeLin = API_USED.overpassTotal;
 
-      // ★ 処理時間計測開始
-      const tkLin = tStart('linear-debug');
+      // ★ 処理時間計測開始（他と同じく performance.now を使用）
+      const tLin0 = performance.now();
 
       // 休憩トリガーごとの「上位POIリスト（配列の配列）」を作る
       //   [ [T1のPOI1,POI2,...], [T2のPOI1,POI2,...], ... ]
@@ -2520,9 +2520,8 @@ async function runAlgoCompareDebug(){
       const linearList = enumerateAllOnePerTrigger(groups);
 
       // ★ 処理時間計測終了
-      tEnd(tkLin);
-      const linPerf = PERF.rows.at(-1);
-      const linMs   = linPerf?.ms ?? 0;
+      const tLin1 = performance.now();
+      const linMs = tLin1 - tLin0;
 
       const linOrs  = API_USED.orsTotal      - orsBeforeLin;
       const linOv   = API_USED.overpassTotal - ovpBeforeLin;
@@ -2530,20 +2529,21 @@ async function runAlgoCompareDebug(){
       // 後で別処理で使いたい場合に備えて保持
       window.__linearResults = linearList;
 
-      // パネル表示
+      // パネルに概要表示
       panel.textContent += `組合せ数: ${linearList.length} 件\n`;
       panel.textContent += `処理時間: ${linMs.toFixed(1)} ms\n`;
       panel.textContent += `ORS呼び出し: ${linOrs} 回\n`;
       panel.textContent += `Overpass呼び出し: ${linOv} 回\n\n`;
 
-      // ★ 画面のリスト表示（ビーム/総当たりと同じUIで見たい場合）
-      showAlgoListInPanel(panel, linearList, 'linear');
+      // ★ ① UI には「上位3件」だけを表示
+      const linearTop3 = linearList.slice(0, 3);
+      showAlgoListInPanel(panel, linearTop3, 'linear');
 
-      // ★ CSV にも記録（beam / bruteforce と同じノリ）
+      // ★ ② CSV には「全組合せ」を書き込む
       pushAlgoResultsForCsv(
         'linear',
         '直線距離（全組合せ）',
-        linearList,
+        linearList,   // ← ここは全件
         linMs,
         linOrs,
         linOv
