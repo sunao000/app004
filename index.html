@@ -2577,20 +2577,16 @@ async function runBruteforceOnce(start, goal, restGroups, profile){
 }
 
 // ======================================================
-// アルゴリズム比較デバッグ本体（Beam / BF / Linear / Viterbi）
+// アルゴリズム比較デバッグ本体（Beam / BF / Viterbi）
 // ======================================================
 async function runAlgoCompareDebug(){
   const panel = $('algoComparePanel');
   panel.textContent = '';
 
-  // --- 関数全体の時間計測開始 ---
   const tAll0 = performance.now();
-
-  // CSVバッファ初期化
   window.__algoCompareRows = [];
 
   try {
-
     // 必須チェック
     if (!routeData || !routeData.fastest) {
       panel.textContent = '先に「休憩場所検索」でルート＋POIを生成してください。';
@@ -2679,56 +2675,56 @@ async function runAlgoCompareDebug(){
 // ----------------------------------------------------------
 panel.textContent += '\n--- Viterbi（API利用・DP） ---\n';
 
-try {
-  const orsBeforeVit = API_USED.orsTotal;
-  const ovpBeforeVit = API_USED.overpassTotal;
+    try {
+      const orsBeforeVit = API_USED.orsTotal;
+      const ovpBeforeVit = API_USED.overpassTotal;
+      const vitGroups = topPoisPerTriggerForLinear(5);
 
-  // ★ 直線距離と同じく「各トリガー最大5件」の候補を使う
-  //   [ [T1のPOI1,POI2,...], [T2のPOI1,POI2,...], ... ] という形
-  const vitGroups = topPoisPerTriggerForLinear(5);
+      if (!vitGroups || !vitGroups.length) {
+        panel.textContent += '(候補なし)\n';
+      } else {
+        const tVit0 = performance.now();
+        const vitList = await runViterbiOnce_API(start, goal, vitGroups, profile);
+        const tVit1 = performance.now();
+        const vitMs = tVit1 - tVit0;
 
-  // 候補が全くない場合
-  if (!vitGroups || !vitGroups.length) {
-    panel.textContent += '(候補なし)\n';
-  } else {
-    const tVit0 = performance.now();
-    // ★ restGroups ではなく vitGroups を渡す
-    const vitList = await runViterbiOnce_API(start, goal, vitGroups, profile);
-    const tVit1 = performance.now();
-    const vitMs = tVit1 - tVit0;
+        const vitOrs = API_USED.orsTotal - orsBeforeVit;
+        const vitOv  = API_USED.overpassTotal - ovpBeforeVit;
 
-    const vitOrs = API_USED.orsTotal - orsBeforeVit;
-    const vitOv  = API_USED.overpassTotal - ovpBeforeVit;
+        if (!vitList || !vitList.length) {
+          panel.textContent += '(候補なし)\n';
+        } else {
+          panel.textContent += `処理時間: ${vitMs.toFixed(1)} ms\n`;
+          panel.textContent += `ORS呼び出し: ${vitOrs} 回\n`;
+          panel.textContent += `Overpass呼び出し: ${vitOv} 回\n\n`;
 
-    // アルゴリズム結果が空なら候補なし
-    if (!vitList || !vitList.length) {
-      panel.textContent += '(候補なし)\n';
-    } else {
-      // UIに情報表示
-      panel.textContent += `処理時間: ${vitMs.toFixed(1)} ms\n`;
-      panel.textContent += `ORS呼び出し: ${vitOrs} 回\n`;
-      panel.textContent += `Overpass呼び出し: ${vitOv} 回\n\n`;
+          showAlgoListInPanel(panel, vitList, 'viterbi');
 
-      // 画面一覧（ビーム・総当たりと同じ関数）
-      showAlgoListInPanel(panel, vitList, 'viterbi');
-
-      // CSV にも記録（今回1件だと思うけど配列でOK）
-      pushAlgoResultsForCsv(
-        'viterbi',
-        'ビタビ（API・DP）',
-        vitList,
-        vitMs,
-        vitOrs,
-        vitOv
-      );
+          pushAlgoResultsForCsv(
+            'viterbi',
+            'ビタビ（API・DP）',
+            vitList,
+            vitMs,
+            vitOrs,
+            vitOv
+          );
+        }
+      }
+    } catch (errVit) {
+      console.error('[viterbi] エラー', errVit);
+      panel.textContent += '\n[Viterbiエラー] ' + (errVit.message || errVit) + '\n';
     }
+
+    // 全体時間
+    const totalMs = performance.now() - tAll0;
+    panel.textContent += `\n====== 全アルゴリズム処理時間: ${totalMs.toFixed(1)} ms ======\n`;
+
+  } catch (err) {
+    console.error('[runAlgoCompareDebug] エラー', err);
+    panel.textContent += '\n[エラー] ' + (err.message || err);
   }
-
-} catch (errVit) {
-  console.error('[viterbi] エラー', errVit);
-  panel.textContent += '\n[Viterbiエラー] ' + (errVit.message || errVit) + '\n';
 }
-
+  
 function ensureProjections() {
   const base = routeData.arterial || routeData.fastest;
   // ルート情報や休憩グループが存在しない場合は何もしない
