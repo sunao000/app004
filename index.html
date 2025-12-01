@@ -1156,10 +1156,6 @@ const prefer = routeData.arterial ? 'arterial' : 'fastest';
 showSingleRoute(prefer, true);
 setActiveButton(prefer === 'arterial' ? $('btnShowArterial') : $('btnShowFastest'));
 
-
-    // 区間統計を表示
-    await showRouteLegSummary();
-
   }catch(e){
     console.error(e);
     alert('ルート取得失敗: '+e.message);
@@ -1421,32 +1417,6 @@ function summaryStats(arr){
   const m = arr.reduce((a,b)=>a+b,0)/arr.length;
   const v = arr.reduce((a,b)=>a+(b-m)**2,0)/arr.length;
   return {mean:m, var:v, std:Math.sqrt(v)};
-}
-async function showRouteLegSummary(){
-  const mass = 75, flat = 18;
-  const outDiv = document.getElementById('legSummaryAll');
-  if (!outDiv) return;
-  outDiv.innerHTML = '';
-  for (const key of ['shortest','fastest','slope','arterial']){
-    const feat = routeData[key];
-    if(!feat) continue;
-    const s = await calcLegStats(feat, mass, flat);
-    const ds = summaryStats(s.dist);
-    const ts = summaryStats(s.time);
-    const es = summaryStats(s.energy);
-    const label = key==='shortest' ? '最短'
-            : key==='fastest'  ? '最速'
-            : key==='slope'    ? '勾配'
-            :                    '幹線';
-    const html = `
-      <details style="margin-bottom:8px">
-        <summary><b>${label}</b> 区間統計（平均 / 分散 / 標準偏差）</summary>
-        距離: ${ds.mean.toFixed(2)} km / ${ds.var.toFixed(2)} km² / σ=${ds.std.toFixed(2)} km<br>
-        時間: ${ts.mean.toFixed(2)} 分 / ${ts.var.toFixed(2)} 分² / σ=${ts.std.toFixed(2)} 分<br>
-        エネルギー: ${es.mean.toFixed(1)} kJ / ${es.var.toFixed(1)} kJ² / σ=${es.std.toFixed(1)} kJ
-      </details>`;
-    outDiv.innerHTML += html;
-  }
 }
 
 /* ===== Overpass（保守的実装） ===== */
