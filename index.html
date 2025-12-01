@@ -2548,7 +2548,10 @@ async function runAlgoCompareDebug(){
         linOrs,
         linOv
       );
-
+ // ★ ここまで来たら全体の処理時間を表示
+    const tAll1 = performance.now();
+    const totalMs = tAll1 - tAll0;
+    panel.textContent += `\n====== 全アルゴリズム処理時間: ${totalMs.toFixed(1)} ms ======\n`;
     } catch (err2) {
       console.error('[auto-linear] 直線距離計算でエラー', err2);
       panel.textContent += '\n[直線距離計算エラー] ' + (err2.message || err2) + '\n';
