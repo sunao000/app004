@@ -2953,12 +2953,23 @@ function downloadAlgoCompareCsv(){
   }
 
   const header = [
-  'algo','label','rank','score','rawScore',
-  'sigmaDist_km','sigmaTime_min','sigmaEnergy_kJ',
-  'time_ms','ors_calls','overpass_calls','poi_names','poi_latLon'
+  'algo',
+  'label',
+  'rank',
+  'score',
+  'rawScore',
+  'sigmaDist_km',
+  'sigmaTime_min',
+  'sigmaEnergy_kJ',
+  'time_ms',
+  'ors_calls',
+  'overpass_calls',
+  'poi_names',
+  'poi_latlngs'
 ];
 
-  const bodyRows = rows.map(r => [
+
+const bodyRows = rows.map(r => [
   r.algo ?? '',
   `"${csvEscape(r.label ?? '')}"`,
   r.rank ?? '',
@@ -2971,7 +2982,7 @@ function downloadAlgoCompareCsv(){
   r.orsCalls ?? '',
   r.overpassCalls ?? '',
   `"${csvEscape(r.poiNames ?? '')}"`,
-  `"${csvEscape(r.poiLatLon ?? '')}"`
+  `"${csvEscape(r.poiLatLngs ?? '')}"`
 ]);
 
   const blob = buildCsvBlob(header, bodyRows);
