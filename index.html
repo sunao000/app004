@@ -2372,7 +2372,69 @@ function runBeamSearchOnce(restGroups, cumTotals) {
   }));
 }
 
-// ▼▼ 追加：総当たりを1回分だけ実行して全結果を返す関数 ▼▼
+async function viterbiRouteCost(p1, p2, profile){
+  const coords = [[p1.lon,p1.lat], [p2.lon,p2.lat]];
+  const res = await orsDirections(coords, profile);
+
+  const dist = res.features[0].properties.summary.distance;
+  const time = res.features[0].properties.summary.duration;
+  const elev = res.features[0].properties.ascent;  // 標高差
+
+  const energy = energyFromRoute(res); // kJ計算
+
+  return { dist, time, energy };
+}
+
+async function runViterbiOnce_API(start, goal, restGroups, profile){
+  const T = restGroups.length;
+  const K = 5;
+
+  const dp   = Array.from({length:T},()=>Array(K).fill(Infinity));
+  const prev = Array.from({length:T},()=>Array(K).fill(-1));
+  const picksRoute = Array.from({length:T},()=>Array(K).fill(null));
+
+  // --- 初期化
+  for(let i=0;i<K;i++){
+    const p = restGroups[0][i];
+    const s = await viterbiRouteCost(start, p, profile);
+    dp[0][i] = s.dist + s.time*0.5 + s.energy*0.3;
+    picksRoute[0][i] = [p];
+  }
+
+  // --- 遷移
+  for(let t=1;t<T;t++){
+    for(let i=0;i<K;i++){
+      const now = restGroups[t][i];
+      for(let j=0;j<K;j++){
+        const prevPoi = restGroups[t-1][j];
+        const s = await viterbiRouteCost(prevPoi, now, profile);
+
+        const cost = s.dist + s.time*0.5 + s.energy*0.3;
+
+        const total = dp[t-1][j] + cost;
+        if(total < dp[t][i]){
+          dp[t][i]   = total;
+          prev[t][i] = j;
+          picksRoute[t][i] = [...picksRoute[t-1][j], now];
+        }
+      }
+    }
+  }
+
+  // best pick
+  let bestIdx = 0;
+  for(let i=1;i<K;i++){
+    if(dp[T-1][i] < dp[T-1][bestIdx]) bestIdx = i;
+  }
+
+  return [{
+    score: dp[T-1][bestIdx],
+    picks: picksRoute[T-1][bestIdx],
+    poiNames: picksRoute[T-1][bestIdx].map(p=>p.name).join(" -> ")
+  }];
+}
+
+// ▼▼ 総当たりを1回分だけ実行して全結果を返す関数 ▼▼
 async function runBruteforceOnce(start, goal, restGroups, profile){
   // 休憩トリガーごとの POI を取得（poiLimit まで）
   const perGroupLimit = Math.max(1, Number($('poiLimit').value) || 5);
@@ -2439,16 +2501,22 @@ async function runBruteforceOnce(start, goal, restGroups, profile){
   return results;
 }
 
-// アルゴリズム比較デバッグ本体
+// ======================================================
+// アルゴリズム比較デバッグ本体（Beam / BF / Linear / Viterbi）
+// ======================================================
 async function runAlgoCompareDebug(){
   const panel = $('algoComparePanel');
   panel.textContent = '';
 
+  // --- 関数全体の時間計測開始 ---
   const tAll0 = performance.now();
+
+  // CSVバッファ初期化
   window.__algoCompareRows = [];
 
   try {
 
+    // 必須チェック
     if (!routeData || !routeData.fastest) {
       panel.textContent = '先に「休憩場所検索」でルート＋POIを生成してください。';
       return;
@@ -2459,13 +2527,12 @@ async function runAlgoCompareDebug(){
     }
 
     ensureProjections();
-    const cumTotals = window.__cumTotals;
-
     const start = pts.find(p=>p.type==='start') || pts[0];
     const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
     const profile = 'cycling-road';
 
     panel.textContent += '====== アルゴリズム比較デバッグ ======\n\n';
+
 
     // ----------------------------------------------------------
     // 1）ビームサーチ
@@ -2476,7 +2543,7 @@ async function runAlgoCompareDebug(){
     const ovpBeforeBeam = API_USED.overpassTotal;
 
     const tBeam0 = performance.now();
-    const beamList = runBeamSearchOnce(restGroups, cumTotals);
+    const beamList = runBeamSearchOnce(restGroups, window.__cumTotals);
     const tBeam1 = performance.now();
     const beamMs = tBeam1 - tBeam0;
 
@@ -2492,11 +2559,12 @@ async function runAlgoCompareDebug(){
     pushAlgoResultsForCsv(
       'beam3',
       'ビームサーチ（幅3）',
-      beamList.slice(0, 3),
+      beamList.slice(0,3),
       beamMs,
       beamOrs,
       beamOv
     );
+
 
     // ----------------------------------------------------------
     // 2）総当たり
@@ -2530,49 +2598,69 @@ async function runAlgoCompareDebug(){
       bfOv
     );
 
+
     // ----------------------------------------------------------
-    // 3）直線距離
+    // 3）直線距離（全組合せ・ゼロAPI）
     // ----------------------------------------------------------
     panel.textContent += '\n--- 直線距離（全組み合わせ・ゼロAPI） ---\n';
 
-    try {
-      const orsBeforeLin = API_USED.orsTotal;
-      const ovpBeforeLin = API_USED.overpassTotal;
+    const tLin0 = performance.now();
+    const groups = topPoisPerTriggerForLinear(5);
+    const linearRows = buildLinearAlgoRows(start, goal, groups);
+    const tLin1 = performance.now();
+    const linMs = tLin1 - tLin0;
 
-      const tLin0 = performance.now();
+    window.__linearResults = linearRows;
 
-      const groups = topPoisPerTriggerForLinear(5);
-      const linearRows = buildLinearAlgoRows(start, goal, groups);
+    panel.textContent += `組合せ数: ${linearRows.length} 件\n`;
+    panel.textContent += `処理時間: ${linMs.toFixed(1)} ms\n\n`;
 
-      const tLin1 = performance.now();
-      const linMs = tLin1 - tLin0;
+    showAlgoListInPanel(panel, linearRows.slice(0,3), 'linear');
 
-      const linOrs = API_USED.orsTotal - orsBeforeLin;
-      const linOv  = API_USED.overpassTotal - ovpBeforeLin;
+    pushAlgoResultsForCsv(
+      'linear',
+      '直線距離（全組合せ）',
+      linearRows,
+      linMs,
+      0,
+      0
+    );
 
-      window.__linearResults = linearRows;
-
-      panel.textContent += `組合せ数: ${linearRows.length} 件\n`;
-      panel.textContent += `処理時間: ${linMs.toFixed(1)} ms\n\n`;
-
-      showAlgoListInPanel(panel, linearRows.slice(0, 3), 'linear');
-
-      pushAlgoResultsForCsv(
-        'linear',
-        '直線距離（全組合せ）',
-        linearRows,
-        linMs,
-        linOrs,
-        linOv
-      );
-
-    } catch (err2){
-      console.error('[auto-linear] 直線距離計算でエラー', err2);
-      panel.textContent += '\n[直線距離計算エラー] ' + (err2.message || err2) + '\n';
-    }
 
     // ----------------------------------------------------------
-    // 全体時間
+    // 4）Viterbi（API利用版） ← NEW!!
+    // ----------------------------------------------------------
+    panel.textContent += '\n--- Viterbi（API利用・DP） ---\n';
+
+    const orsBeforeVit = API_USED.orsTotal;
+    const ovpBeforeVit = API_USED.overpassTotal;
+
+    const tVit0 = performance.now();
+    const vitList = await runViterbiOnce_API(start, goal, restGroups, profile);
+    const tVit1 = performance.now();
+    const vitMs = tVit1 - tVit0;
+
+    const vitOrs = API_USED.orsTotal - orsBeforeVit;
+    const vitOv  = API_USED.overpassTotal - ovpBeforeVit;
+
+    panel.textContent += `処理時間: ${vitMs.toFixed(1)} ms\n`;
+    panel.textContent += `ORS呼び出し: ${vitOrs} 回\n`;
+    panel.textContent += `Overpass呼び出し: ${vitOv} 回\n\n`;
+
+    showAlgoListInPanel(panel, vitList.slice(0,3), 'viterbi');
+
+    pushAlgoResultsForCsv(
+      'viterbi',
+      'Viterbi（API利用）',
+      vitList.slice(0,3),
+      vitMs,
+      vitOrs,
+      vitOv
+    );
+
+
+    // ----------------------------------------------------------
+    // 全体処理時間
     // ----------------------------------------------------------
     const totalMs = performance.now() - tAll0;
     panel.textContent += `\n====== 全アルゴリズム処理時間: ${totalMs.toFixed(1)} ms ======\n`;
