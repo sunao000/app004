@@ -2386,58 +2386,69 @@ async function viterbiRouteCost(p1, p2, profile){
 }
 
 // Viterbi（API利用版）
-// start, goal: {lat, lon} のようなオブジェクト
+// start, goal: {lat, lon} 形式
 // restGroups: [ [POI, POI, ...], [POI, ...], ... ] 各トリガーごとの候補POI
-async function runViterbiOnce_API(start, goal, restGroups, profile){
-  // 1. トリガー数
+// profile: 'cycling-road' など
+async function runViterbiOnce_API(start, goal, restGroups, profile) {
+
+  // 1. トリガー数を安全に取得
   const T = Array.isArray(restGroups) ? restGroups.length : 0;
 
-  if (!Number.isInteger(T) || T <= 0){
-    console.warn('[Viterbi] restGroups の長さが不正です:', T);
+  if (!Number.isInteger(T) || T <= 0) {
+    console.warn('[Viterbi] restGroups が空 / 不正です:', restGroups);
     return [];
   }
 
-  // 2. 各トリガーごとの候補数（0 のものがあればそこで打ち切り）
+  // 2. 各トリガーごとの候補数を確認
   const Klist = restGroups.map(g => Array.isArray(g) ? g.length : 0);
-
-  if (Klist.some(k => !Number.isInteger(k) || k <= 0)){
-    console.warn('[Viterbi] 候補POIが0件のトリガーがあります:', Klist);
+  if (Klist.some(k => !Number.isInteger(k) || k <= 0)) {
+    console.warn('[Viterbi] 候補0件のトリガーがあります:', Klist);
     return [];
   }
 
-  // 3. dp / prev 配列を「トリガーごと」「候補数ごと」に作る
-  //   dp[t][k] = t番目トリガーでk番目POIを選んだときの最小コスト
-  //   prev[t][k] = 一つ前のトリガーでのインデックス
-  const dp   = Array.from({ length: T }, (_, t) => new Array(Klist[t]).fill(Infinity));
-  const prev = Array.from({ length: T }, (_, t) => new Array(Klist[t]).fill(-1));
+  // 3. dp / prev 配列を手動で作成（Array.from を使わない）
+  //    dp[t][k]   : t番目トリガーで k番目POIを選んだ時の最小コスト
+  //    prev[t][k] : 1つ前のトリガーでのインデックス
+  const dp   = [];
+  const prev = [];
 
-  // 4. 「start → 最初のトリガーの各POI」までのコストを計算して初期化
-  for (let k = 0; k < Klist[0]; k++){
-    const poi = restGroups[0][k];
-    const cost = await calcLegCostWithApi(start, poi, profile); // ★既にある経路コスト用ヘルパーに合わせて
-    dp[0][k] = cost.total;  // total = 距離+時間+エネ等、あなたの設計に合わせる
+  for (let t = 0; t < T; t++) {
+    dp[t]   = new Array(Klist[t]).fill(Infinity);
+    prev[t] = new Array(Klist[t]).fill(-1);
   }
 
-  // 5. 「t-1 → t」の遷移を全部試して、dpを更新（ここがビタビの本体）
-  for (let t = 1; t < T; t++){
-    const curGroup = restGroups[t];
-    const prevGroup = restGroups[t-1];
+  // 4. start → 最初のトリガーの各POI までのコストで初期化
+  for (let k = 0; k < Klist[0]; k++) {
+    const poi  = restGroups[0][k];
 
-    for (let j = 0; j < Klist[t]; j++){
+    // ★ ここは「区間コストを API で取る」既存ヘルパーに合わせて変更
+    // 例: calcLegCostWithApi(start, poi, profile) など
+    const legCost = await calcLegCostWithApi(start, poi, profile);
+
+    // total: 「距離 + 時間 + エネルギー」など、最終スコアとして使いたいもの
+    dp[0][k] = legCost.total;
+  }
+
+  // 5. Viterbi 本体：トリガー t-1 → t への遷移をすべて試して最小コストを更新
+  for (let t = 1; t < T; t++) {
+    const curGroup  = restGroups[t];
+    const prevGroup = restGroups[t - 1];
+
+    for (let j = 0; j < Klist[t]; j++) {
       const toPoi = curGroup[j];
 
       let bestCost = Infinity;
       let bestIdx  = -1;
 
-      for (let i = 0; i < Klist[t-1]; i++){
+      for (let i = 0; i < Klist[t - 1]; i++) {
         const fromPoi = prevGroup[i];
 
-        if (!Number.isFinite(dp[t-1][i])) continue; // そもそも到達不能ならスキップ
+        if (!Number.isFinite(dp[t - 1][i])) continue; // そもそも到達不能ならスキップ
 
         const legCost = await calcLegCostWithApi(fromPoi, toPoi, profile);
-        const cand = dp[t-1][i] + legCost.total;
+        const cand    = dp[t - 1][i] + legCost.total;
 
-        if (cand < bestCost){
+        if (cand < bestCost) {
           bestCost = cand;
           bestIdx  = i;
         }
@@ -2448,67 +2459,56 @@ async function runViterbiOnce_API(start, goal, restGroups, profile){
     }
   }
 
-  // 6. 最後のトリガー → goal のコストも入れて、最終的な最小ルートを選ぶ
+  // 6. 最後のトリガー → goal まで足して、最終的に一番良いルートを決める
+  const lastT = T - 1;
   let bestFinalCost = Infinity;
   let bestFinalIdx  = -1;
 
-  const lastT = T - 1;
-  for (let k = 0; k < Klist[lastT]; k++){
+  for (let k = 0; k < Klist[lastT]; k++) {
     if (!Number.isFinite(dp[lastT][k])) continue;
 
-    const poi = restGroups[lastT][k];
+    const poi     = restGroups[lastT][k];
     const legCost = await calcLegCostWithApi(poi, goal, profile);
-    const cand = dp[lastT][k] + legCost.total;
+    const cand    = dp[lastT][k] + legCost.total;
 
-    if (cand < bestFinalCost){
+    if (cand < bestFinalCost) {
       bestFinalCost = cand;
       bestFinalIdx  = k;
     }
   }
 
-  if (bestFinalIdx < 0 || !Number.isFinite(bestFinalCost)){
-    console.warn('[Viterbi] ゴールへ到達するルートが見つかりませんでした');
+  if (bestFinalIdx < 0 || !Number.isFinite(bestFinalCost)) {
+    console.warn('[Viterbi] ゴールまで到達するルートが見つかりませんでした');
     return [];
   }
 
-  // 7. prev をたどって「どのPOIを選んだか」を復元
+  // 7. prev をたどって選択された POI 列を復元
   const picks = new Array(T);
-  let curIdx = bestFinalIdx;
-  for (let t = lastT; t >= 0; t--){
+  let curIdx  = bestFinalIdx;
+
+  for (let t = lastT; t >= 0; t--) {
     picks[t] = restGroups[t][curIdx];
-    curIdx = prev[t][curIdx];
-    if (t > 0 && curIdx < 0){
-      console.warn('[Viterbi] prev の辻褄が合わない箇所がありました');
+    curIdx   = prev[t][curIdx];
+
+    if (t > 0 && curIdx < 0) {
+      console.warn('[Viterbi] prev の辻褄が合いません t=', t);
       break;
     }
   }
 
-  // 8. あなたの既存の形式に合わせた戻り値を組み立て
+  // 8. 既存の beam / bruteforce と同じ形式に揃えて返す
   return [{
-    score: bestFinalCost,
+    score: bestFinalCost,        // 総合スコア（小さいほど良い）
+    rawScore: bestFinalCost,     // 必要に応じて同じ値を入れておく
     stats: {
-      // ここは beam/bruteforce に合わせて適宜計算・詰める
-      dist:   [],  // 区間ごとの距離配列
+      // TODO: 必要なら「区間ごとに距離/時間/エネを保存」して配列で入れる
+      dist:   [],
       time:   [],
       energy: []
     },
-    picks,           // 選ばれたPOI列
+    picks,
     picksByTrigger: picks
   }];
-}
-
-// ORS APIでルートを取得し、距離/時間/kJを返す
-async function orsCost(a, b, profile){
-  const res = await orsDirections([[a.lon, a.lat], [b.lon, b.lat]], profile);
-  const sum = res.features[0].properties.summary;
-
-  const dist  = sum.distance;         // meters
-  const time  = sum.duration;         // seconds
-  const elev  = sum.ascent || 0;
-
-  const energy = energyStepKJ(dist, elev, 75, true); // mass=75kg仮固定
-
-  return { dist, time, energy };
 }
 
 // ▼▼ 総当たりを1回分だけ実行して全結果を返す関数 ▼▼
