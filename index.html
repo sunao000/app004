@@ -2385,35 +2385,49 @@ async function viterbiRouteCost(p1, p2, profile){
   return { dist, time, energy };
 }
 
+// ======================================================
+// Viterbi（API利用）
+//   各トリガーの5POIを状態とし、DPで最小スコア経路を選択
+// ======================================================
 async function runViterbiOnce_API(start, goal, restGroups, profile){
   const T = restGroups.length;
-  const K = 5;
+  const K = Math.max(...restGroups.map(g => g.length));
 
-  const dp   = Array.from({length:T},()=>Array(K).fill(Infinity));
+  // dp[t][i] = そのトリガーに到達した時点での最小スコア
+  const dp = Array.from({length:T},()=>Array(K).fill(Infinity));
   const prev = Array.from({length:T},()=>Array(K).fill(-1));
+
+  // 各POIまでの経路を保持
   const picksRoute = Array.from({length:T},()=>Array(K).fill(null));
 
-  // --- 初期化
-  for(let i=0;i<K;i++){
+  // ======================================================
+  // スタートから最初のトリガーへの初期化
+  // ======================================================
+  for(let i=0;i<restGroups[0].length;i++){
     const p = restGroups[0][i];
-    const s = await viterbiRouteCost(start, p, profile);
-    dp[0][i] = s.dist + s.time*0.5 + s.energy*0.3;
+    const s = await orsCost(start, p, profile);   // API呼び出し
+    const score = s.dist + s.time + s.energy;     // B=1:1:1
+
+    dp[0][i] = score;
     picksRoute[0][i] = [p];
   }
 
-  // --- 遷移
+  // ======================================================
+  // Viterbi 遷移処理
+  // ======================================================
   for(let t=1;t<T;t++){
-    for(let i=0;i<K;i++){
+    for(let i=0;i<restGroups[t].length;i++){
       const now = restGroups[t][i];
-      for(let j=0;j<K;j++){
+
+      for(let j=0;j<restGroups[t-1].length;j++){
         const prevPoi = restGroups[t-1][j];
-        const s = await viterbiRouteCost(prevPoi, now, profile);
+        const s = await orsCost(prevPoi, now, profile);
 
-        const cost = s.dist + s.time*0.5 + s.energy*0.3;
-
+        const cost = s.dist + s.time + s.energy;
         const total = dp[t-1][j] + cost;
+
         if(total < dp[t][i]){
-          dp[t][i]   = total;
+          dp[t][i] = total;
           prev[t][i] = j;
           picksRoute[t][i] = [...picksRoute[t-1][j], now];
         }
@@ -2421,17 +2435,35 @@ async function runViterbiOnce_API(start, goal, restGroups, profile){
     }
   }
 
-  // best pick
+  // ======================================================
+  // 最後にゴールへの遷移を評価
+  // ======================================================
   let bestIdx = 0;
-  for(let i=1;i<K;i++){
+  for(let i=1;i<restGroups[T-1].length;i++){
     if(dp[T-1][i] < dp[T-1][bestIdx]) bestIdx = i;
   }
 
   return [{
+    algo: 'viterbi',
     score: dp[T-1][bestIdx],
     picks: picksRoute[T-1][bestIdx],
-    poiNames: picksRoute[T-1][bestIdx].map(p=>p.name).join(" -> ")
+    // CSV向け名称
+    poiNames: picksRoute[T-1][bestIdx].map(p=>p.name||'POI').join(' -> ')
   }];
+}
+
+// ORS APIでルートを取得し、距離/時間/kJを返す
+async function orsCost(a, b, profile){
+  const res = await orsDirections([[a.lon, a.lat], [b.lon, b.lat]], profile);
+  const sum = res.features[0].properties.summary;
+
+  const dist  = sum.distance;         // meters
+  const time  = sum.duration;         // seconds
+  const elev  = sum.ascent || 0;
+
+  const energy = energyStepKJ(dist, elev, 75, true); // mass=75kg仮固定
+
+  return { dist, time, energy };
 }
 
 // ▼▼ 総当たりを1回分だけ実行して全結果を返す関数 ▼▼
@@ -2832,21 +2864,23 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       .filter(s=>s)
       .join(' | ');
 
-    window.__algoCompareRows.push({
-      algo: algoCode,
-      label,
-      rank,                        // ★ sort後の順位をそのまま採用
-      score:        scoreCombined, // ★ 総合スコアで格付け
-      rawScore:     (r.rawScore ?? r.score ?? null),
-      sigmaDist:    sig.dist,
-      sigmaTime:    sig.time,
-      sigmaEnergy:  sig.energy,
-      timeMs:       elapsedMs ?? null,
-      orsCalls:     orsCalls ?? null,
-      overpassCalls:overpassCalls ?? null,
-      poiNames,
-      poiLatLngs
-    });
+window.__algoCompareRows.push({
+  algo: algoCode,
+  label,
+  rank,
+  score,
+  rawScore,
+  sigmaDist,
+  sigmaTime,
+  sigmaEnergy,
+  timeMs,
+  orsCalls,
+  overpassCalls,
+  poiNames,
+  poiLatLon: (r.picks || r.picksByTrigger || [])
+    .map(p => `${p.lat.toFixed(6)},${p.lon.toFixed(6)}`)
+    .join(' | ')
+});
   });
 }
   
@@ -2909,36 +2943,26 @@ function downloadAlgoCompareCsv(){
   }
 
   const header = [
-    'algo',
-    'label',
-    'rank',
-    'score',
-    'rawScore',
-    'sigmaDist_km',
-    'sigmaTime_min',
-    'sigmaEnergy_kJ',
-    'time_ms',
-    'ors_calls',
-    'overpass_calls',
-    'poi_names',
-    'poi_latlngs'
-  ];
+  'algo','label','rank','score','rawScore',
+  'sigmaDist_km','sigmaTime_min','sigmaEnergy_kJ',
+  'time_ms','ors_calls','overpass_calls','poi_names','poi_latLon'
+];
 
   const bodyRows = rows.map(r => [
-    r.algo ?? '',
-    `"${csvEscape(r.label ?? '')}"`,
-    r.rank ?? '',
-    r.score ?? '',
-    r.rawScore ?? '',
-    r.sigmaDist ?? '',
-    r.sigmaTime ?? '',
-    r.sigmaEnergy ?? '',
-    r.timeMs ?? '',
-    r.orsCalls ?? '',
-    r.overpassCalls ?? '',
-    `"${csvEscape(r.poiNames ?? '')}"`,
-    `"${csvEscape(r.poiLatLngs ?? '')}"`
-  ]);
+  r.algo ?? '',
+  `"${csvEscape(r.label ?? '')}"`,
+  r.rank ?? '',
+  r.score ?? '',
+  r.rawScore ?? '',
+  r.sigmaDist ?? '',
+  r.sigmaTime ?? '',
+  r.sigmaEnergy ?? '',
+  r.timeMs ?? '',
+  r.orsCalls ?? '',
+  r.overpassCalls ?? '',
+  `"${csvEscape(r.poiNames ?? '')}"`,
+  `"${csvEscape(r.poiLatLon ?? '')}"`
+]);
 
   const blob = buildCsvBlob(header, bodyRows);
   downloadBlob(blob, 'algo_compare_debug.csv');
