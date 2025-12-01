@@ -2312,8 +2312,6 @@ function projectToRoute(lat,lon, coords, cum){
 
 /* ===== 共通ユーティリティ：候補検査＆未採用の強制補修 ===== */
 
-/* ===== 共通ユーティリティ：候補検査＆未採用の強制補修 ===== */
-
 // i番目トリガーに有効候補(_proj.cumDが有限)があるか？
 function hasValidCand(restGroups, i){
   const g = restGroups[i];
@@ -2676,76 +2674,60 @@ async function runAlgoCompareDebug(){
     );
 
 
-    // ----------------------------------------------------------
-    // 3）直線距離（全組合せ・ゼロAPI）
-    // ----------------------------------------------------------
-    panel.textContent += '\n--- 直線距離（全組み合わせ・ゼロAPI） ---\n';
+// ----------------------------------------------------------
+// 3）Viterbi（API利用・DP）
+// ----------------------------------------------------------
+panel.textContent += '\n--- Viterbi（API利用・DP） ---\n';
 
-    const tLin0 = performance.now();
-    const groups = topPoisPerTriggerForLinear(5);
-    const linearRows = buildLinearAlgoRows(start, goal, groups);
-    const tLin1 = performance.now();
-    const linMs = tLin1 - tLin0;
+try {
+  const orsBeforeVit = API_USED.orsTotal;
+  const ovpBeforeVit = API_USED.overpassTotal;
 
-    window.__linearResults = linearRows;
+  // ★ 直線距離と同じく「各トリガー最大5件」の候補を使う
+  //   [ [T1のPOI1,POI2,...], [T2のPOI1,POI2,...], ... ] という形
+  const vitGroups = topPoisPerTriggerForLinear(5);
 
-    panel.textContent += `組合せ数: ${linearRows.length} 件\n`;
-    panel.textContent += `処理時間: ${linMs.toFixed(1)} ms\n\n`;
-
-    showAlgoListInPanel(panel, linearRows.slice(0,3), 'linear');
-
-    pushAlgoResultsForCsv(
-      'linear',
-      '直線距離（全組合せ）',
-      linearRows,
-      linMs,
-      0,
-      0
-    );
-
-
-    // ----------------------------------------------------------
-    // 4）Viterbi（API利用版） ← NEW!!
-    // ----------------------------------------------------------
-    panel.textContent += '\n--- Viterbi（API利用・DP） ---\n';
-
-    const orsBeforeVit = API_USED.orsTotal;
-    const ovpBeforeVit = API_USED.overpassTotal;
-
+  // 候補が全くない場合
+  if (!vitGroups || !vitGroups.length) {
+    panel.textContent += '(候補なし)\n';
+  } else {
     const tVit0 = performance.now();
-    const vitList = await runViterbiOnce_API(start, goal, restGroups, profile);
+    // ★ restGroups ではなく vitGroups を渡す
+    const vitList = await runViterbiOnce_API(start, goal, vitGroups, profile);
     const tVit1 = performance.now();
     const vitMs = tVit1 - tVit0;
 
     const vitOrs = API_USED.orsTotal - orsBeforeVit;
     const vitOv  = API_USED.overpassTotal - ovpBeforeVit;
 
-    panel.textContent += `処理時間: ${vitMs.toFixed(1)} ms\n`;
-    panel.textContent += `ORS呼び出し: ${vitOrs} 回\n`;
-    panel.textContent += `Overpass呼び出し: ${vitOv} 回\n\n`;
+    // アルゴリズム結果が空なら候補なし
+    if (!vitList || !vitList.length) {
+      panel.textContent += '(候補なし)\n';
+    } else {
+      // UIに情報表示
+      panel.textContent += `処理時間: ${vitMs.toFixed(1)} ms\n`;
+      panel.textContent += `ORS呼び出し: ${vitOrs} 回\n`;
+      panel.textContent += `Overpass呼び出し: ${vitOv} 回\n\n`;
 
-    showAlgoListInPanel(panel, vitList.slice(0,3), 'viterbi');
+      // 画面一覧（ビーム・総当たりと同じ関数）
+      showAlgoListInPanel(panel, vitList, 'viterbi');
 
-    pushAlgoResultsForCsv(
-      'viterbi',
-      'Viterbi（API利用）',
-      vitList.slice(0,3),
-      vitMs,
-      vitOrs,
-      vitOv
-    );
-
-
-    // ----------------------------------------------------------
-    // 全体処理時間
-    // ----------------------------------------------------------
-    const totalMs = performance.now() - tAll0;
-    panel.textContent += `\n====== 全アルゴリズム処理時間: ${totalMs.toFixed(1)} ms ======\n`;
-
-  } catch(err){
-    console.error('[runAlgoCompareDebug] エラー', err);
-    panel.textContent += '\n[エラー] ' + (err.message || err);
+      // CSV にも記録（今回1件だと思うけど配列でOK）
+      pushAlgoResultsForCsv(
+        'viterbi',
+        'ビタビ（API・DP）',
+        vitList,
+        vitMs,
+        vitOrs,
+        vitOv
+      );
+    }
   }
+
+} catch (errVit) {
+  console.error('[viterbi] エラー', errVit);
+  panel.textContent += '\n[Viterbiエラー] ' + (errVit.message || errVit) + '\n';
+}
 }
 
 function ensureProjections() {
