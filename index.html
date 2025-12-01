@@ -2577,17 +2577,26 @@ async function runBruteforceOnce(start, goal, restGroups, profile){
 }
 
 // ======================================================
-// アルゴリズム比較デバッグ本体（Beam / BF / Viterbi）
+// アルゴリズム比較デバッグ本体
+//   - ビームサーチ（ゼロAPI）
+//   - 総当たり（API多め）
+//   - 直線距離（全組合せ・ゼロAPI）
+//   - Viterbi（API利用・DP）
 // ======================================================
 async function runAlgoCompareDebug(){
   const panel = $('algoComparePanel');
   panel.textContent = '';
 
+  // 関数全体の時間計測開始
   const tAll0 = performance.now();
+
+  // CSV 用バッファ初期化
   window.__algoCompareRows = [];
 
   try {
-    // 必須チェック
+    // -----------------------------
+    // 前提チェック
+    // -----------------------------
     if (!routeData || !routeData.fastest) {
       panel.textContent = '先に「休憩場所検索」でルート＋POIを生成してください。';
       return;
@@ -2597,16 +2606,19 @@ async function runAlgoCompareDebug(){
       return;
     }
 
+    // 射影などの前処理
     ensureProjections();
-    const start = pts.find(p=>p.type==='start') || pts[0];
-    const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
+    const cumTotals = window.__cumTotals;
+
+    // Start / Goal / profile
+    const start = pts.find(p => p.type === 'start') || pts[0];
+    const goal  = pts.find(p => p.type === 'goal')  || pts[pts.length - 1];
     const profile = 'cycling-road';
 
     panel.textContent += '====== アルゴリズム比較デバッグ ======\n\n';
 
-
     // ----------------------------------------------------------
-    // 1）ビームサーチ
+    // 1）ビームサーチ（ゼロAPI）
     // ----------------------------------------------------------
     panel.textContent += '--- ビームサーチ（幅3・ゼロAPI） ---\n';
 
@@ -2614,31 +2626,32 @@ async function runAlgoCompareDebug(){
     const ovpBeforeBeam = API_USED.overpassTotal;
 
     const tBeam0 = performance.now();
-    const beamList = runBeamSearchOnce(restGroups, window.__cumTotals);
+    const beamList = runBeamSearchOnce(restGroups, cumTotals);  // 同期想定
     const tBeam1 = performance.now();
     const beamMs = tBeam1 - tBeam0;
 
-    const beamOrs = API_USED.orsTotal - orsBeforeBeam;
+    const beamOrs = API_USED.orsTotal      - orsBeforeBeam;
     const beamOv  = API_USED.overpassTotal - ovpBeforeBeam;
 
     panel.textContent += `処理時間: ${beamMs.toFixed(1)} ms\n`;
     panel.textContent += `ORS呼び出し: ${beamOrs} 回\n`;
     panel.textContent += `Overpass呼び出し: ${beamOv} 回\n\n`;
 
+    // 上位3件をUIに表示
     showAlgoListInPanel(panel, beamList, 'beam3');
 
+    // CSV（上位3件のみ）
     pushAlgoResultsForCsv(
       'beam3',
       'ビームサーチ（幅3）',
-      beamList.slice(0,3),
+      beamList.slice(0, 3),
       beamMs,
       beamOrs,
       beamOv
     );
 
-
     // ----------------------------------------------------------
-    // 2）総当たり
+    // 2）総当たり（API多め・高精度）
     // ----------------------------------------------------------
     panel.textContent += '\n--- 総当たり（API多め・高精度） ---\n';
 
@@ -2650,7 +2663,7 @@ async function runAlgoCompareDebug(){
     const tBF1 = performance.now();
     const bfMs = tBF1 - tBF0;
 
-    const bfOrs = API_USED.orsTotal - orsBeforeBF;
+    const bfOrs = API_USED.orsTotal      - orsBeforeBF;
     const bfOv  = API_USED.overpassTotal - ovpBeforeBF;
 
     panel.textContent += `処理時間: ${bfMs.toFixed(1)} ms\n`;
@@ -2658,8 +2671,10 @@ async function runAlgoCompareDebug(){
     panel.textContent += `Overpass呼び出し: ${bfOv} 回\n`;
     panel.textContent += `組合せ数: ${bfList.length} 件\n\n`;
 
+    // 上位3件をUIに表示
     showAlgoListInPanel(panel, bfList, 'bruteforce');
 
+    // CSV（総当たりは全件）
     pushAlgoResultsForCsv(
       'bruteforce',
       '総当たり',
@@ -2669,26 +2684,82 @@ async function runAlgoCompareDebug(){
       bfOv
     );
 
+    // ----------------------------------------------------------
+    // 3）直線距離（全組合せ・ゼロAPI）
+    // ----------------------------------------------------------
+    panel.textContent += '\n--- 直線距離（全組み合わせ・ゼロAPI） ---\n';
 
-// ----------------------------------------------------------
-// 3）Viterbi（API利用・DP）
-// ----------------------------------------------------------
-panel.textContent += '\n--- Viterbi（API利用・DP） ---\n';
+    try {
+      const orsBeforeLin = API_USED.orsTotal;
+      const ovpBeforeLin = API_USED.overpassTotal;
+
+      const tLin0 = performance.now();
+
+      // 各トリガーごとに「上位POI 5件まで」の配列を作成
+      // [ [T1 の POI...], [T2 の POI...], ... ]
+      const groups = topPoisPerTriggerForLinear(5);
+
+      if (!groups || !groups.length) {
+        panel.textContent += '(候補なし)\n';
+      } else {
+        // 全組合せの直線距離などをまとめた rows を構築
+        // rows[i] = { picks: [...], km, stats:{dist:[],time:[],energy:[]}, ... }
+        const linearRows = buildLinearAlgoRows(start, goal, groups);
+
+        const tLin1 = performance.now();
+        const linMs = tLin1 - tLin0;
+
+        const linOrs = API_USED.orsTotal      - orsBeforeLin;
+        const linOv  = API_USED.overpassTotal - ovpBeforeLin;
+
+        // 後で別処理（専用UIなど）で使いたい場合に保持
+        window.__linearResults = linearRows;
+
+        panel.textContent += `組合せ数: ${linearRows.length} 件\n`;
+        panel.textContent += `処理時間: ${linMs.toFixed(1)} ms\n`;
+        panel.textContent += `ORS呼び出し: ${linOrs} 回\n`;
+        panel.textContent += `Overpass呼び出し: ${linOv} 回\n\n`;
+
+        // UIには上位3件だけ表示
+        showAlgoListInPanel(panel, linearRows.slice(0, 3), 'linear');
+
+        // CSVには全組合せを記録
+        pushAlgoResultsForCsv(
+          'linear',
+          '直線距離（全組合せ）',
+          linearRows,
+          linMs,
+          linOrs,
+          linOv
+        );
+      }
+    } catch (errLin) {
+      console.error('[linear] 直線距離計算でエラー', errLin);
+      panel.textContent += '\n[直線距離計算エラー] ' + (errLin.message || errLin) + '\n';
+    }
+
+    // ----------------------------------------------------------
+    // 4）Viterbi（API利用・DP）
+    // ----------------------------------------------------------
+    panel.textContent += '\n--- Viterbi（API利用・DP） ---\n';
 
     try {
       const orsBeforeVit = API_USED.orsTotal;
       const ovpBeforeVit = API_USED.overpassTotal;
+
+      // 直線距離と同じく「各トリガー最大5件」の候補を使う
       const vitGroups = topPoisPerTriggerForLinear(5);
 
       if (!vitGroups || !vitGroups.length) {
         panel.textContent += '(候補なし)\n';
       } else {
         const tVit0 = performance.now();
+        // restGroups ではなく「POI配列の配列」を渡す
         const vitList = await runViterbiOnce_API(start, goal, vitGroups, profile);
         const tVit1 = performance.now();
         const vitMs = tVit1 - tVit0;
 
-        const vitOrs = API_USED.orsTotal - orsBeforeVit;
+        const vitOrs = API_USED.orsTotal      - orsBeforeVit;
         const vitOv  = API_USED.overpassTotal - ovpBeforeVit;
 
         if (!vitList || !vitList.length) {
@@ -2698,8 +2769,10 @@ panel.textContent += '\n--- Viterbi（API利用・DP） ---\n';
           panel.textContent += `ORS呼び出し: ${vitOrs} 回\n`;
           panel.textContent += `Overpass呼び出し: ${vitOv} 回\n\n`;
 
+          // UI表示
           showAlgoListInPanel(panel, vitList, 'viterbi');
 
+          // CSV記録
           pushAlgoResultsForCsv(
             'viterbi',
             'ビタビ（API・DP）',
@@ -2715,7 +2788,9 @@ panel.textContent += '\n--- Viterbi（API利用・DP） ---\n';
       panel.textContent += '\n[Viterbiエラー] ' + (errVit.message || errVit) + '\n';
     }
 
-    // 全体時間
+    // ----------------------------------------------------------
+    // 関数全体の処理時間
+    // ----------------------------------------------------------
     const totalMs = performance.now() - tAll0;
     panel.textContent += `\n====== 全アルゴリズム処理時間: ${totalMs.toFixed(1)} ms ======\n`;
 
