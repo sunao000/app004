@@ -2063,7 +2063,6 @@ function enumerateAllOnePerTrigger(groups, hardCap=200000){
 }
 
 // 直線距離アルゴリズム用に、全組合せを「行オブジェクト」に変換して返すヘルパー
-// 直線距離アルゴリズム用に、全組合せを「行オブジェクト」に変換して返すヘルパー
 function buildLinearAlgoRows(start, goal, groups, hardCap = 200000) {
   const combos = enumerateAllOnePerTrigger(groups, hardCap);
 
@@ -2129,7 +2128,8 @@ async function calcLegCostWithApi(from, to, profile){
   const timeMin = timeS / 60;
 
   // ★ コスト定義：ひとまず距離(km)＋時間(分)
-  const total = distKm + timeMin;
+  //const total = distKm + timeMin;
+  const total = distKm;
 
   return { total, distKm, timeMin };
 }
