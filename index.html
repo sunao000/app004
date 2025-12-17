@@ -3080,10 +3080,10 @@ try {
   } else {
     const t0 = performance.now();
 
-    const cList = await runViterbiOnce_API_C(start, goal, groupsC, profile, {
-      includeEndTriggers: true,
-      adjacentMeters: 80
-    });
+    const cList = await runViterbiOnce_API_C_BeamFull(start, goal, groupsC, profile, {
+  beamWidth: 12   // 好きな値に。UI化したいならA/Bと同じ要領で入力欄を増やせる
+});
+
 
     const t1 = performance.now();
     const ms  = t1 - t0;
@@ -4177,6 +4177,125 @@ async function runViterbiOnce_API_C(start, goal, restGroups, profile, opt = {}) 
     picksByTrigger: picks
   }];
 }
+
+// ======================================================
+// NEW 対策C（置き換え案）:
+//  - DPではなく Beam（近似）
+//  - 各段で「start + これまでのpicks + 次候補 (+ goal)」を1回のORSで評価
+//  - beamWidth 本だけ残す
+//  - キャッシュで同じwaypoints列の再計算を避ける
+// ======================================================
+function wpsKey(points, decimals = 6){
+  const f = (x)=> Number(x).toFixed(decimals);
+  return (points || []).map(p=>{
+    if(!p) return 'null';
+    const lat = Number(p.lat ?? p.latitude);
+    const lon = Number(p.lon ?? p.lng ?? p.longitude);
+    if(!Number.isFinite(lat) || !Number.isFinite(lon)) return 'bad';
+    return `${f(lat)},${f(lon)}`;
+  }).join('||');
+}
+
+async function orsRouteCached(wps, profile, cache){
+  const key = wpsKey(wps, 6);
+  if (cache && cache.has(key)) return cache.get(key);
+
+  const out = await routeLegStatsForWaypoints(
+    wps.map(p=>({ lat:p.lat, lon:p.lon, name:p.name || 'POI' })),
+    profile
+  );
+
+  const packed = {
+    key,
+    feature: out?.feature || null,
+    stats: out?.stats || null
+  };
+
+  if (cache) cache.set(key, packed);
+  return packed;
+}
+
+// ★ 対策C（Beam + 経由地増やすORS）
+async function runViterbiOnce_API_C_BeamFull(start, goal, groups, profile, opt = {}){
+  const T = Array.isArray(groups) ? groups.length : 0;
+  if (!T) return [];
+
+  const beamWidth = Math.max(1, Number(opt.beamWidth) || 12);
+
+  // スコアは「最終経路statsから energyMSE」を優先（既存方針に合わせる）
+  const ideals = getIdealPerLegs();
+
+  // ORS結果キャッシュ（同じwaypoints列は二度呼ばない）
+  const cache = new Map();
+
+  // beam state:
+  // { score, picks, picksByTrigger, feature, stats }
+  let beam = [];
+
+  // --- t=0（最初のトリガー候補を展開） ---
+  for (let j = 0; j < groups[0].length; j++){
+    const p0 = groups[0][j];
+    const wps0 = [start, p0]; // まだgoalは入れない
+    const out0 = await orsRouteCached(wps0, profile, cache);
+
+    // ※中間段はstatsが「最後まで」じゃないので、暫定スコアとして energyMSE を使う
+    //   ここは「距離/時間/エネルギーの部分MSE」でもOKだが、まずは簡単に統一スコアで。
+    const s0 = (out0.stats ? finalScoreFromStats(out0.stats, ideals) : Infinity);
+
+    beam.push({
+      score: Number.isFinite(s0) ? s0 : Infinity,
+      picks: [p0],
+      picksByTrigger: [p0],
+      feature: out0.feature,
+      stats: out0.stats
+    });
+  }
+
+  beam.sort((a,b)=>a.score-b.score);
+  beam = beam.slice(0, beamWidth);
+
+  // --- t=1..T-1 ---
+  for (let t = 1; t < T; t++){
+    const next = [];
+
+    for (const st of beam){
+      for (let j = 0; j < groups[t].length; j++){
+        const pt = groups[t][j];
+        const picks = [...st.picks, pt];
+
+        // 最後のトリガーなら goal まで含めて “完成形” を評価
+        const wps = (t === T-1)
+          ? [start, ...picks, goal]
+          : [start, ...picks];
+
+        try{
+          const out = await orsRouteCached(wps, profile, cache);
+          const s = (out.stats ? finalScoreFromStats(out.stats, ideals) : Infinity);
+
+          next.push({
+            score: Number.isFinite(s) ? s : Infinity,
+            picks,
+            picksByTrigger: picks, // トリガー順の列
+            feature: out.feature,
+            stats: out.stats
+          });
+        }catch(e){
+          // 失敗は捨てる
+          console.warn('[C_BeamFull] expand fail', e);
+        }
+      }
+    }
+
+    if (!next.length) return [];
+
+    next.sort((a,b)=>a.score-b.score);
+    beam = next.slice(0, beamWidth);
+  }
+
+  // beam[0] が最良（完成形）
+  return beam.length ? [beam[0]] : [];
+}
+
 
 function distMeters(a, b){
   if (!a || !b) return Infinity;
