@@ -2232,17 +2232,10 @@ async function runViterbiOnce_API(start, goal, restGroups, profile) {
     return [];
   }
 
-  // ★ 追加：スタート→ゴールの総量と、理想1レグ分
-  const cumTotals = window.__cumTotals || {};
-  const totalDkm   = (Number(cumTotals.D) || 0) / 1000;  // m → km
-  const totalTmin  = (Number(cumTotals.T) || 0) / 60;    // s → min
-  const totalEkJ   = Number(cumTotals.E)  || 0;          // kJ
-
-  // 「理想値 = 総量 / トリガー数」でOKとする（Naoki指定）
-  const R = T + 1; // トリガー数
-  const idealDistPerLeg   = R > 0 ? totalDkm  / R : 0;
-  const idealTimePerLeg   = R > 0 ? totalTmin / R : 0;
-  const idealEnergyPerLeg = R > 0 ? totalEkJ  / R : 0;
+  const ideals = getIdealPerLegs();
+  const idealDistPerLeg   = ideals.idealDistPerLeg;
+  const idealTimePerLeg   = ideals.idealTimePerLeg;
+  const idealEnergyPerLeg = ideals.idealEnergyPerLeg;
 
   const Klist = restGroups.map(g => Array.isArray(g) ? g.length : 0);
   if (Klist.some(k => !Number.isInteger(k) || k <= 0)) {
@@ -2383,8 +2376,7 @@ try {
   //   idealEnergyPerLeg
   // );
   // if (Number.isFinite(exactMse)) finalScore = exactMse;
-const ideals = { idealEnergyPerLeg };
-const exact = finalScoreFromStats(stats, ideals);
+const exact = finalScoreFromStats(stats, { idealEnergyPerLeg });
 if (Number.isFinite(exact)) finalScore = exact;
 
 } catch (e) {
@@ -2705,21 +2697,11 @@ async function runBruteforceOnce(start, goal, restGroups, profile){
     throw new Error('組み合わせ候補が作れませんでした。');
   }
 
-  // ★ 追加：Viterbi と同じ理想1レグ分をここで計算しておく
-  //   - __cumTotals は ensureProjections() でセットされている前提
-  const cumTotals = window.__cumTotals || {};
-  const totalDkm  = (Number(cumTotals.D) || 0) / 1000; // m → km
-  const totalTmin = (Number(cumTotals.T) || 0) / 60;   // s → min
-  const totalEkJ  = Number(cumTotals.E)  || 0;         // kJ
-
-  // トリガー数 = restGroups.length
-  // レグ数 = トリガー数 + 1（start→休憩1, …, 休憩R→goal）
+   const ideals = getIdealPerLegs();
+  const idealDistPerLeg   = ideals.idealDistPerLeg;
+  const idealTimePerLeg   = ideals.idealTimePerLeg;
+  const idealEnergyPerLeg = ideals.idealEnergyPerLeg;
   const T = Array.isArray(restGroups) ? restGroups.length : 0;
-  const R = T + 1;
-
-  const idealDistPerLeg   = R > 0 ? totalDkm  / R : 0;
-  const idealTimePerLeg   = R > 0 ? totalTmin / R : 0;
-  const idealEnergyPerLeg = R > 0 ? totalEkJ  / R : 0;
 
   const results = [];
   let okCount = 0;
@@ -3177,39 +3159,24 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
   if (!Array.isArray(resultList) || !resultList.length) return;
   if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
 
-  const cumTotals = window.__cumTotals || {};
-  const totalDkm  = (Number(cumTotals.D) || 0) / 1000;
-  const totalTmin = (Number(cumTotals.T) || 0) / 60;
-  const totalEkJ  = Number(cumTotals.E)  || 0;
-
-  const T = Array.isArray(window.restGroups) ? window.restGroups.length : 0;
-  const R = T + 1;
-
-  const idealDistPerLeg   = R > 0 ? totalDkm  / R : 0;
-  const idealTimePerLeg   = R > 0 ? totalTmin / R : 0;
-  const idealEnergyPerLeg = R > 0 ? totalEkJ  / R : 0;
-
-  // ★破壊しないソート + スコアは完全統一
-  const sorted = resultList.slice().sort((a,b)=>{
-    return unifiedScoreForCompare(a, idealEnergyPerLeg) - unifiedScoreForCompare(b, idealEnergyPerLeg);
-  });
+  const ideals = getIdealPerLegs();
+  const sorted = sortResultsByUnifiedScore(resultList, ideals.idealEnergyPerLeg);
 
   sorted.forEach((r, idx)=>{
     const rank = idx + 1;
 
-    const sigmaDist   = stdDev(r.stats?.dist || []);
-    const sigmaTime   = stdDev(r.stats?.time || []);
-    const sigmaEnergy = stdDev(r.stats?.energy || []);
+    const sigmaDist   = stdDev(r.stats && r.stats.dist ? r.stats.dist : []);
+    const sigmaTime   = stdDev(r.stats && r.stats.time ? r.stats.time : []);
+    const sigmaEnergy = stdDev(r.stats && r.stats.energy ? r.stats.energy : []);
 
-    // ★CSVに出すスコアも “同じ関数” の値
-    const scoreForCsv = unifiedScoreForCompare(r, idealEnergyPerLeg);
+    const scoreForCsv = unifiedScoreForCompare(r, ideals.idealEnergyPerLeg);
 
     let poiList = (r.picks || r.picksByTrigger || []).filter(Boolean);
     if (Array.isArray(poiList[0])) poiList = poiList.flat().filter(Boolean);
 
     const poiNames = poiList.map(p => p.name || 'POI').join(' -> ');
     const poiLatLngs = poiList
-      .map(p => `${(p.lat??p.latitude)?.toFixed(6)},${(p.lon??p.lng??p.longitude)?.toFixed(6)}`)
+      .map(p => `${(p.lat ?? p.latitude)?.toFixed(6)},${(p.lon ?? p.lng ?? p.longitude)?.toFixed(6)}`)
       .filter(Boolean)
       .join(' | ');
 
@@ -3238,9 +3205,11 @@ function showAlgoListInPanel(panel, list, algoCode){
     panel.textContent += '(候補なし)\n';
     return;
   }
-
+  
   const MAX_SHOW = 3;
-  const top = list.slice(0, MAX_SHOW);
+  const ideals = getIdealPerLegs();
+  const sorted = sortResultsByUnifiedScore(list, ideals.idealEnergyPerLeg);
+  const top = sorted.slice(0, MAX_SHOW);
 
   top.forEach((r, idx)=>{
     const rank = idx + 1;
@@ -3546,53 +3515,83 @@ console.log('[autoBeamParams]', ap);
   return cand;
 }
 
-// ---- 対策A：TopKを総量MSEで再ランキングして “1本” だけ返す ----
-async function runViterbiTopK_Rerank_API(start, goal, restGroups, profile, opt = {}){
-  const topKList = await runViterbiTopK_API(start, goal, restGroups, profile, opt);
-  if (!topKList.length) return [];
+// ======================================================
+// 共通：TopK候補（runViterbiTopK_APIの返り値）を
+// 1) 重複排除（任意）
+// 2) ORSで stats を作り直して energyMSE で再評価
+// 3) 並べ替え
+// 4) 1本返す or 全件返す を切替
+// ======================================================
+async function rerankTopKCandsByExactScore(start, goal, candList, profile, opt = {}){
+  const list = Array.isArray(candList) ? candList : [];
+  if (!list.length) return [];
 
-  // ideal 1 leg（既存と同じ）
-  const cumTotals = window.__cumTotals || {};
-  const totalDkm  = (Number(cumTotals.D) || 0) / 1000;
-  const totalTmin = (Number(cumTotals.T) || 0) / 60;
-  const totalEkJ  = Number(cumTotals.E)  || 0;
-  const T = restGroups.length;
-  const R = T + 1;
-  const idealDistPerLeg   = R > 0 ? totalDkm  / R : 0;
-  const idealTimePerLeg   = R > 0 ? totalTmin / R : 0;
-  const idealEnergyPerLeg = R > 0 ? totalEkJ  / R : 0;
+  const ideals = getIdealPerLegs();
+  const idealEnergyPerLeg = ideals.idealEnergyPerLeg;
 
+  const doDedupe = !!opt.dedupe;
+  const returnAll = !!opt.returnAll;
+
+  // 1) 重複排除（任意）
+  let work = list;
+  if (doDedupe){
+    const seen = new Set();
+    const uniq = [];
+    for (const c of list){
+      const key = comboKeyFromPicksByTrigger(c && c.picksByTrigger, 6);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniq.push(c);
+    }
+    work = uniq;
+  }
+  if (!work.length) return [];
+
+  // 2) ORSで正確なstatsを作って energyMSE で再評価
   const rescored = [];
-  for (const c of topKList){
+  for (const c of work){
     try{
-      const wps = [start, ...c.picks, goal].map(p=>({lat:p.lat, lon:p.lon, name:p.name||'POI'}));
+      const picks = Array.isArray(c && c.picks) ? c.picks : [];
+      const wps = [start, ...picks, goal].map(p=>({lat:p.lat, lon:p.lon, name:p.name||'POI'}));
       const out = await routeLegStatsForWaypoints(wps, profile);
-      const feature = out?.feature;
-      const stats   = out?.stats;
+      const feature = out && out.feature ? out.feature : null;
+      const stats = out && out.stats ? out.stats : null;
 
-      // const mseScore = routeMseScoreFromStats(stats, idealDistPerLeg, idealTimePerLeg, idealEnergyPerLeg);
-const eScore = routeEnergyMseFromStats(stats, idealEnergyPerLeg);
+      const score = (stats ? routeEnergyMseFromStats(stats, idealEnergyPerLeg) : NaN);
 
-rescored.push({
-  score: eScore,            // ← これにする
-  rawScore: c.approxScore,
-  feature,
-  stats,
-  picks: c.picks,
-  picksByTrigger: c.picksByTrigger
-});
-
+      rescored.push({
+        score: score,
+        rawScore: c.approxScore,
+        feature,
+        stats,
+        picks,
+        picksByTrigger: c.picksByTrigger
+      });
     }catch(e){
-      // 失敗は捨てる
-      console.warn('[viterbi_topk_rerank] candidate route fail', e);
+      console.warn('[rerankTopKCandsByExactScore] candidate fail', e);
     }
   }
 
   if (!rescored.length) return [];
-  rescored.sort((a,b)=>a.score-b.score);
 
-  // 1本だけ返す（比較に載せやすい）
-  return [rescored[0]];
+  // 3) scoreで並べ替え（NaNは後ろへ）
+  rescored.sort((a,b)=>{
+    const sa = unifiedScoreForCompare(a, idealEnergyPerLeg);
+    const sb = unifiedScoreForCompare(b, idealEnergyPerLeg);
+    return sa - sb;
+  });
+
+  // 4) 返す形を切替
+  return returnAll ? rescored : [rescored[0]];
+}
+
+// ---- 対策A：TopKを総量MSEで再ランキングして “1本” だけ返す ----
+async function runViterbiTopK_Rerank_API(start, goal, restGroups, profile, opt = {}){
+  const topKList = await runViterbiTopK_API(start, goal, restGroups, profile, opt);
+  return await rerankTopKCandsByExactScore(start, goal, topKList, profile, {
+    dedupe: false,
+    returnAll: false
+  });
 }
   
 function legL1Cost(d, t, e, ideald, idealt, ideale){
@@ -3729,7 +3728,11 @@ function attachBfRank(resultList, bfRankMap){
   if(!Array.isArray(resultList)) return resultList;
 
   resultList.forEach(r=>{
-    const key = comboKeyFromPicksByTrigger(r.picksByTrigger);
+    const pbt = Array.isArray(r.picksByTrigger) ? r.picksByTrigger
+              : Array.isArray(r.picks) ? r.picks
+              : null;
+
+    const key = pbt ? comboKeyFromPicksByTrigger(pbt) : 'bad';
     r.bfRank = bfRankMap.has(key) ? bfRankMap.get(key) : null;
   });
   return resultList;
@@ -3783,171 +3786,33 @@ function autoBeamParams(restGroups, opt = {}){
 // ---- 対策B：TopKを重複排除してから総量MSEで再ランキング（API） ----
 async function runViterbiTopK_Rerank_API_Dedupe(start, goal, restGroups, profile, opt = {}){
   const topKList = await runViterbiTopK_API(start, goal, restGroups, profile, opt);
-  if (!topKList.length) return [];
-
-  // ★③ 重複排除：同じ picksByTrigger を除外
-  const seen = new Set();
-  const uniq = [];
-  for (const c of topKList){
-    const key = comboKeyFromPicksByTrigger(c.picksByTrigger, 6); // 既存関数を流用
-    if (seen.has(key)) continue;
-    seen.add(key);
-    uniq.push(c);
-  }
-  if (!uniq.length) return [];
-
-  // --- 以下は runViterbiTopK_Rerank_API と同じ（総量MSEで再評価） ---
-  const cumTotals = window.__cumTotals || {};
-  const totalDkm  = (Number(cumTotals.D) || 0) / 1000;
-  const totalTmin = (Number(cumTotals.T) || 0) / 60;
-  const totalEkJ  = Number(cumTotals.E)  || 0;
-
-  const T = restGroups.length;
-  const R = T + 1;
-  const idealDistPerLeg   = R > 0 ? totalDkm  / R : 0;
-  const idealTimePerLeg   = R > 0 ? totalTmin / R : 0;
-  const idealEnergyPerLeg = R > 0 ? totalEkJ  / R : 0;
-
-  const rescored = [];
-  for (const c of uniq){
-    try{
-      const wps = [start, ...c.picks, goal].map(p=>({lat:p.lat, lon:p.lon, name:p.name||'POI'}));
-      const out = await routeLegStatsForWaypoints(wps, profile);
-      const feature = out?.feature;
-      const stats   = out?.stats;
-
-      // const mseScore = routeMseScoreFromStats(stats, idealDistPerLeg, idealTimePerLeg, idealEnergyPerLeg);
-      const eScore = routeEnergyMseFromStats(stats, idealEnergyPerLeg);
-
-      rescored.push({
-        score: eScore,          // ★最終評価（総当たりと同じ）
-        rawScore: c.approxScore,  // 近似スコア（参考）
-        feature,
-        stats,
-        picks: c.picks,
-        picksByTrigger: c.picksByTrigger
-      });
-    }catch(e){
-      console.warn('[viterbi_topk_rerank_dedupe] candidate route fail', e);
-    }
-  }
-
-  if (!rescored.length) return [];
-  rescored.sort((a,b)=>a.score-b.score);
-  return [rescored[0]];
+  return await rerankTopKCandsByExactScore(start, goal, topKList, profile, {
+    dedupe: true,
+    returnAll: false
+  });
 }
 
-// ---- 対策B(全件)：TopKを重複排除してから総量MSEで再ランキング（全件返す） ----
-async function runViterbiTopK_Rerank_All_API_Dedupe(start, goal, restGroups, profile, opt = {}){
-  const topKList = await runViterbiTopK_API(start, goal, restGroups, profile, opt);
-  if (!topKList.length) return [];
-
-  // ★重複排除
-  const seen = new Set();
-  const uniq = [];
-  for (const c of topKList){
-    const key = comboKeyFromPicksByTrigger(c.picksByTrigger, 6);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    uniq.push(c);
-  }
-  if (!uniq.length) return [];
-
-  // ★総量MSEで再評価
-  const cumTotals = window.__cumTotals || {};
-  const totalDkm  = (Number(cumTotals.D) || 0) / 1000;
-  const totalTmin = (Number(cumTotals.T) || 0) / 60;
-  const totalEkJ  = Number(cumTotals.E)  || 0;
-
-  const T = restGroups.length;
-  const R = T + 1;
-  const idealDistPerLeg   = R > 0 ? totalDkm  / R : 0;
-  const idealTimePerLeg   = R > 0 ? totalTmin / R : 0;
-  const idealEnergyPerLeg = R > 0 ? totalEkJ  / R : 0;
-
-  const rescored = [];
-  for (const c of uniq){
-    try{
-      const wps = [start, ...c.picks, goal].map(p=>({lat:p.lat, lon:p.lon, name:p.name||'POI'}));
-      const out = await routeLegStatsForWaypoints(wps, profile);
-      const feature = out?.feature;
-      const stats   = out?.stats;
-
-      const mseScore = routeMseScoreFromStats(stats, idealDistPerLeg, idealTimePerLeg, idealEnergyPerLeg);
-
-      rescored.push({
-        score: mseScore,
-        rawScore: c.approxScore,
-        feature,
-        stats,
-        picks: c.picks,
-        picksByTrigger: c.picksByTrigger
-      });
-    }catch(e){
-      console.warn('[B_all_dedupe] candidate route fail', e);
-    }
-  }
-
-  rescored.sort((a,b)=>a.score-b.score);
-  return rescored; // ★全件返す
-}
-
-// ---- 対策A(全件)：TopKを総量MSEで再ランキングして “全件” 返す ----
+// ---- 対策A(全件)：TopKを総量MSEで再ランキング（全件返す・重複排除なし） ----
 async function runViterbiTopK_Rerank_All_API(start, goal, restGroups, profile, opt = {}){
   const topKList = await runViterbiTopK_API(start, goal, restGroups, profile, opt);
-  if (!topKList.length) return [];
-
-  const cumTotals = window.__cumTotals || {};
-  const totalDkm  = (Number(cumTotals.D) || 0) / 1000;
-  const totalTmin = (Number(cumTotals.T) || 0) / 60;
-  const totalEkJ  = Number(cumTotals.E)  || 0;
-
-  const T = restGroups.length;
-  const R = T + 1;
-  const idealDistPerLeg   = R > 0 ? totalDkm  / R : 0;
-  const idealTimePerLeg   = R > 0 ? totalTmin / R : 0;
-  const idealEnergyPerLeg = R > 0 ? totalEkJ  / R : 0;
-
-  const rescored = [];
-  for (const c of topKList){
-    try{
-      const wps = [start, ...c.picks, goal].map(p=>({lat:p.lat, lon:p.lon, name:p.name||'POI'}));
-      const out = await routeLegStatsForWaypoints(wps, profile);
-      const feature = out?.feature;
-      const stats   = out?.stats;
-
-      const mseScore = routeMseScoreFromStats(
-        stats, idealDistPerLeg, idealTimePerLeg, idealEnergyPerLeg
-      );
-
-      rescored.push({
-        score: mseScore,            // ★Excelで見る本命（総量MSE）
-        rawScore: c.approxScore,    // 近似スコア（参考）
-        feature,
-        stats,
-        picks: c.picks,
-        picksByTrigger: c.picksByTrigger
-      });
-    }catch(e){
-      console.warn('[A_all] candidate fail', e);
-    }
-  }
-
-  rescored.sort((a,b)=>a.score-b.score);
-  return rescored; // ★全件返す
+  return await rerankTopKCandsByExactScore(start, goal, topKList, profile, {
+    dedupe: false,
+    returnAll: true
+  });
 }
 
 function routeEnergyMseFromStats(stats, idealEnergyPerLeg){
-  const eArr = stats?.energy || [];
+  const eArr = stats && Array.isArray(stats.energy) ? stats.energy : [];
   const n = eArr.length;
   if (!n) return NaN;
 
   let sum = 0;
-  for(let i=0;i<n;i++){
-    const de = (Number(eArr[i])||0) - idealEnergyPerLeg;
-    sum += de*de;
+  for (let i = 0; i < n; i++){
+    const ei = Number(eArr[i]);
+    const de = (Number.isFinite(ei) ? ei : 0) - idealEnergyPerLeg;
+    sum += de * de;
   }
-  return sum / n; // ★MSEにする
+  return sum / n;
 }
 
 function defaultLinearSorter(a, b){
@@ -3961,36 +3826,63 @@ function sumNums(arr){
   return (arr || []).reduce((a,b)=>a + (Number(b)||0), 0);
 }
 
-function attachBfRank(resultList, bfRankMap){
-  if(!bfRankMap || !(bfRankMap instanceof Map)) return resultList;
-  if(!Array.isArray(resultList)) return resultList;
-
-  resultList.forEach(r=>{
-    const pbt = Array.isArray(r.picksByTrigger) ? r.picksByTrigger : null;
-    const key = pbt ? comboKeyFromPicksByTrigger(pbt) : 'bad';
-    r.bfRank = bfRankMap.has(key) ? bfRankMap.get(key) : null;
-  });
-  return resultList;
-}
-
 function finalScoreFromStats(stats, ideals){
   // 今の方針：レグごとの energy 均等性
   return routeEnergyMseFromStats(stats, ideals.idealEnergyPerLeg);
 }
 
+// ======================================================
+// 共通：理想レグ（ideal per leg）を計算
+// ======================================================
+function getIdealPerLegs(){
+  const cumTotals = window.__cumTotals || {};
+  const totalDkm  = (Number(cumTotals.D) || 0) / 1000;
+  const totalTmin = (Number(cumTotals.T) || 0) / 60;
+  const totalEkJ  = Number(cumTotals.E)  || 0;
+
+  const T = Array.isArray(window.restGroups) ? window.restGroups.length : 0;
+  const R = T + 1;
+
+  return {
+    totalDkm, totalTmin, totalEkJ,
+    T, R,
+    idealDistPerLeg:   R > 0 ? totalDkm  / R : 0,
+    idealTimePerLeg:   R > 0 ? totalTmin / R : 0,
+    idealEnergyPerLeg: R > 0 ? totalEkJ  / R : 0,
+  };
+}
+
+// ======================================================
+// 共通：比較用のスコア（並び順・CSV・表示を一致させる）
+// stats があれば energyMSE を最優先（総当たりと同じ土俵）
+// ======================================================
 function unifiedScoreForCompare(r, idealEnergyPerLeg){
-  // stats があるなら「総当たりと同じ土俵」＝ energyMSE を最優先
-  const e = (r?.stats ? routeEnergyMseFromStats(r.stats, idealEnergyPerLeg) : NaN);
+  const e = (r && r.stats) ? routeEnergyMseFromStats(r.stats, idealEnergyPerLeg) : NaN;
   if (Number.isFinite(e)) return e;
 
-  // stats が無い/計算できない場合のフォールバック
-  const s = Number(r?.score);
+  const s = Number(r && r.score);
   if (Number.isFinite(s)) return s;
 
-  const rs = Number(r?.rawScore);
+  const rs = Number(r && r.rawScore);
   if (Number.isFinite(rs)) return rs;
 
   return Infinity;
+}
+
+// 共通：破壊しないソート（元配列を壊さない）
+function sortResultsByUnifiedScore(list, idealEnergyPerLeg){
+  const arr = Array.isArray(list) ? list : [];
+  return arr.slice().sort((a,b)=>{
+    return unifiedScoreForCompare(a, idealEnergyPerLeg) - unifiedScoreForCompare(b, idealEnergyPerLeg);
+  });
+}
+
+async function runViterbiTopK_Rerank_All_API_Dedupe(start, goal, restGroups, profile, opt = {}){
+  const topKList = await runViterbiTopK_API(start, goal, restGroups, profile, opt);
+  return await rerankTopKCandsByExactScore(start, goal, topKList, profile, {
+    dedupe: true,
+    returnAll: true
+  });
 }
 
 </script>
