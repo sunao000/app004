@@ -3054,6 +3054,50 @@ const bList = await runViterbiTopK_Rerank_All_API_Dedupe(start, goal, groupsB, p
     }
 
     // ----------------------------------------------------------
+    // 5）対策C
+    // ----------------------------------------------------------
+  panel.textContent += '\n--- 対策C：Viterbi（端をスコアから除外 + 端トリガーを条件で経由） ---\n';
+try {
+  const orsBefore = API_USED.orsTotal;
+  const ovpBefore = API_USED.overpassTotal;
+
+  const capPerTrigger = Math.max(1, Number($('poiLimit')?.value) || 5);
+  const groupsC = makeCandGroupsFromRestGroups(restGroups, capPerTrigger);
+
+  if (!groupsC || !groupsC.length) {
+    panel.textContent += '(候補なし)\n';
+  } else {
+    const t0 = performance.now();
+
+    const cList = await runViterbiOnce_API_C(start, goal, groupsC, profile, {
+      includeEndTriggers: true,
+      adjacentMeters: 80
+    });
+
+    const t1 = performance.now();
+    const ms  = t1 - t0;
+    const ors = API_USED.orsTotal - orsBefore;
+    const ov  = API_USED.overpassTotal - ovpBefore;
+
+    if (!cList || !cList.length) {
+      panel.textContent += '(候補なし)\n';
+    } else {
+      attachBfRank(cList, bfRankMap);
+
+      panel.textContent += `処理時間: ${ms.toFixed(1)} ms\n`;
+      panel.textContent += `ORS呼び出し: ${ors} 回\n`;
+      panel.textContent += `Overpass呼び出し: ${ov} 回\n\n`;
+
+      showAlgoListInPanel(panel, cList, 'viterbi_c');
+      pushAlgoResultsForCsv('viterbi_c','対策C：端除外Viterbi + 端トリガー条件経由',cList,ms,ors,ov);
+    }
+  }
+} catch (e) {
+  console.error('[viterbi_c] error', e);
+  panel.textContent += '\n[対策C エラー] ' + (e.message || e) + '\n';
+}
+
+    // ----------------------------------------------------------
     // 全体時間
     // ----------------------------------------------------------
     const totalMs = performance.now() - tAll0;
@@ -3908,6 +3952,171 @@ function getAbViterbiOpt(){
     if (Number.isFinite(tk) && tk > 0) opt.topK      = Math.floor(tk);
   }
   return opt; // auto=true のときは {} を返す（autoBeamParamsが効く）
+}
+
+async function runViterbiOnce_API_C(start, goal, restGroups, profile, opt = {}) {
+  const T = Array.isArray(restGroups) ? restGroups.length : 0;
+  if (!Number.isInteger(T) || T <= 0) return [];
+
+  const ideals = getIdealPerLegs();
+  const idealDistPerLeg   = ideals.idealDistPerLeg;
+  const idealTimePerLeg   = ideals.idealTimePerLeg;
+  const idealEnergyPerLeg = ideals.idealEnergyPerLeg;
+
+  const Klist = restGroups.map(g => Array.isArray(g) ? g.length : 0);
+  if (Klist.some(k => !Number.isInteger(k) || k <= 0)) return [];
+
+  const dp   = [];
+  const prev = [];
+  for (let t = 0; t < T; t++) {
+    dp[t]   = new Array(Klist[t]).fill(Infinity);
+    prev[t] = new Array(Klist[t]).fill(-1);
+  }
+
+  // 対策Cの肝：
+  // start→最初、最後→goal をスコア計算から外す（端は0点スタート・0点ゴール）
+  // その代わり「トリガー間（グループ間）」の遷移だけで最適化する
+
+  // dp[0][k] は全て0（開始コストなし）
+  for (let k = 0; k < Klist[0]; k++){
+    dp[0][k] = 0;
+  }
+
+  // t-1 → t（ここだけ評価する）
+  for (let t = 1; t < T; t++) {
+    const curGroup  = restGroups[t];
+    const prevGroup = restGroups[t - 1];
+
+    for (let j = 0; j < Klist[t]; j++) {
+      const toPoi = curGroup[j];
+
+      let bestCost = Infinity;
+      let bestIdx  = -1;
+
+      for (let i = 0; i < Klist[t - 1]; i++) {
+        if (!Number.isFinite(dp[t - 1][i])) continue;
+
+        const fromPoi = prevGroup[i];
+        const leg = await calcLegCostWithApi(fromPoi, toPoi, profile);
+
+        const mse = legMseCost(
+          leg.distKm,
+          leg.timeMin,
+          leg.energyKj,
+          idealDistPerLeg,
+          idealTimePerLeg,
+          idealEnergyPerLeg
+        );
+
+        const cand = dp[t - 1][i] + mse;
+        if (cand < bestCost) {
+          bestCost = cand;
+          bestIdx  = i;
+        }
+      }
+
+      dp[t][j]   = bestCost;
+      prev[t][j] = bestIdx;
+    }
+  }
+
+  // 最終選択（最後→goal も足さないので、dp[last] の最小を選ぶ）
+  const lastT = T - 1;
+  let bestFinalCost = Infinity;
+  let bestFinalIdx  = -1;
+
+  for (let k = 0; k < Klist[lastT]; k++) {
+    const v = dp[lastT][k];
+    if (!Number.isFinite(v)) continue;
+    if (v < bestFinalCost) {
+      bestFinalCost = v;
+      bestFinalIdx  = k;
+    }
+  }
+  if (bestFinalIdx < 0 || !Number.isFinite(bestFinalCost)) return [];
+
+  // 復元
+  const picks = new Array(T);
+  let curIdx  = bestFinalIdx;
+
+  for (let t = lastT; t >= 0; t--) {
+    picks[t] = restGroups[t][curIdx];
+    curIdx   = prev[t][curIdx];
+  }
+
+  // stats/feature は「表示用の完全経路」で1回だけ作る
+  let feature = null;
+  let stats   = { dist:[], time:[], energy:[] };
+  let finalScore = bestFinalCost;
+
+  try {
+    const wps = buildWaypointsForRoute(start, goal, picks, window.restGroups, opt);
+    const out = await routeLegStatsForWaypoints(wps, profile);
+    feature = out?.feature || null;
+    if (out?.stats) stats = out.stats;
+
+    const exact = finalScoreFromStats(stats, { idealEnergyPerLeg });
+    if (Number.isFinite(exact)) finalScore = exact;
+  } catch (e) {
+    console.warn('[Viterbi_C] stats build fail', e);
+  }
+
+  return [{
+    score: finalScore,
+    rawScore: bestFinalCost,
+    feature,
+    stats,
+    picks,
+    picksByTrigger: picks
+  }];
+}
+
+function distMeters(a, b){
+  if (!a || !b) return Infinity;
+  if (window.L && L.latLng){
+    return L.latLng(a.lat, a.lon).distanceTo(L.latLng(b.lat, b.lon));
+  }
+  // Leaflet無い前提のフォールバック（雑でOKなら）
+  const dx = (a.lat - b.lat) * 111320;
+  const dy = (a.lon - b.lon) * 111320;
+  return Math.hypot(dx, dy);
+}
+
+function maybeEndTriggersAsWaypoints(start, goal, restGroups, opt){
+  const T = Array.isArray(restGroups) ? restGroups.length : 0;
+  if (!T) return { addStartTrig:false, addGoalTrig:false, startTrig:null, goalTrig:null };
+
+  const thr = Number(opt?.adjacentMeters) || 80;
+
+  const startTrig = restGroups[0]?.rest || null;
+  const goalTrig  = restGroups[T-1]?.rest || null;
+
+  const addStartTrig = !!(opt?.includeEndTriggers && startTrig && distMeters(start, startTrig) <= thr);
+  const addGoalTrig  = !!(opt?.includeEndTriggers && goalTrig  && distMeters(goal,  goalTrig)  <= thr);
+
+  return { addStartTrig, addGoalTrig, startTrig, goalTrig };
+}
+
+// 表示・stats計算用のwaypointsを作る（必要なら端トリガーを差し込む）
+function buildWaypointsForRoute(start, goal, picks, restGroups, opt){
+  const ends = maybeEndTriggersAsWaypoints(start, goal, restGroups, opt);
+
+  const wps = [];
+  wps.push(start);
+
+  if (ends.addStartTrig) wps.push(ends.startTrig);
+
+  (picks || []).forEach(p=>{ if (p) wps.push(p); });
+
+  if (ends.addGoalTrig) wps.push(ends.goalTrig);
+
+  wps.push(goal);
+
+  return wps.map(p => ({
+    lat: p.lat,
+    lon: p.lon,
+    name: p.name || 'POI'
+  }));
 }
 
 </script>
