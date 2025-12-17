@@ -3062,7 +3062,10 @@ try {
   const ovpBefore = API_USED.overpassTotal;
 
   const capPerTrigger = Math.max(1, Number($('poiLimit')?.value) || 5);
-  const groupsC = makeCandGroupsFromRestGroups(restGroups, capPerTrigger);
+  const groupsC = makeCandGroupsFromRestGroups(restGroups, capPerTrigger)
+    .map(g => Array.isArray(g) ? g.filter(Boolean) : [])
+    .filter(g => g.length > 0);
+
 
   if (!groupsC || !groupsC.length) {
     panel.textContent += '(候補なし)\n';
@@ -3095,6 +3098,43 @@ try {
 } catch (e) {
   console.error('[viterbi_c] error', e);
   panel.textContent += '\n[対策C エラー] ' + (e.message || e) + '\n';
+}
+
+    // ----------------------------------------------------------
+    // 6）対策D
+    // ----------------------------------------------------------
+panel.textContent += '\n--- 対策D：段階的に固定解除してViterbi ---\n';
+try {
+  const orsBefore = API_USED.orsTotal;
+  const ovpBefore = API_USED.overpassTotal;
+
+  const t0 = performance.now();
+  const prog = await runViterbi_D_Progressive(start, goal, restGroups, profile, {
+    capPerTrigger: 5,
+    sorter: defaultLinearSorter
+  });
+  const t1 = performance.now();
+
+  const ms  = t1 - t0;
+  const ors = API_USED.orsTotal - orsBefore;
+  const ov  = API_USED.overpassTotal - ovpBefore;
+
+  const last = prog[prog.length - 1]?.best ? [prog[prog.length - 1].best] : [];
+  panel.textContent += `段階数: ${prog.length}\n`;
+  panel.textContent += `処理時間: ${ms.toFixed(1)} ms\n`;
+  panel.textContent += `ORS呼び出し: ${ors} 回\n`;
+  panel.textContent += `Overpass呼び出し: ${ov} 回\n\n`;
+
+  if (last.length){
+    showAlgoListInPanel(panel, last, 'viterbi_D_prog');
+    pushAlgoResultsForCsv('viterbi_D_prog','対策D：段階的固定解除Viterbi', last, ms, ors, ov);
+  } else {
+    panel.textContent += '(候補なし)\n';
+  }
+
+} catch (e) {
+  console.error('[viterbi_D_prog] error', e);
+  panel.textContent += '\n[対策D エラー] ' + (e.message || e) + '\n';
 }
 
     // ----------------------------------------------------------
@@ -3954,6 +3994,70 @@ function getAbViterbiOpt(){
   return opt; // auto=true のときは {} を返す（autoBeamParamsが効く）
 }
 
+// lat/lon正規化（揺れ吸収）
+function normLL(p){
+  if(!p) return null;
+  const lat = Number(p.lat ?? p.latitude ?? p.y);
+  const lon = Number(p.lon ?? p.lng ?? p.longitude ?? p.x);
+  if(!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return { lat, lon };
+}
+
+function distMeters(a, b){
+  const A = normLL(a), B = normLL(b);
+  if(!A || !B) return Infinity;
+
+  if (window.L && L.latLng){
+    return L.latLng(A.lat, A.lon).distanceTo(L.latLng(B.lat, B.lon));
+  }
+  // 簡易フォールバック（雑でOK）
+  const dx = (A.lat - B.lat) * 111320;
+  const dy = (A.lon - B.lon) * 111320;
+  return Math.hypot(dx, dy);
+}
+
+// start/goalに近い端トリガーをwaypointsに差し込むか判断
+function maybeEndTriggersAsWaypoints(start, goal, restGroups, opt){
+  const T = Array.isArray(restGroups) ? restGroups.length : 0;
+  if (!T) return { addStartTrig:false, addGoalTrig:false, startTrig:null, goalTrig:null };
+
+  const thr = Number(opt?.adjacentMeters) || 80;
+
+  const startTrig = restGroups[0]?.rest || null;
+  const goalTrig  = restGroups[T-1]?.rest || null;
+
+  const addStartTrig = !!(opt?.includeEndTriggers && startTrig && distMeters(start, startTrig) <= thr);
+  const addGoalTrig  = !!(opt?.includeEndTriggers && goalTrig  && distMeters(goal,  goalTrig)  <= thr);
+
+  return { addStartTrig, addGoalTrig, startTrig, goalTrig };
+}
+
+// 表示・stats計算用のwaypointsを作る（必要なら端トリガーを差し込む）
+function buildWaypointsForRoute(start, goal, picks, restGroups, opt){
+  const ends = maybeEndTriggersAsWaypoints(start, goal, restGroups, opt);
+
+  const wps = [];
+  wps.push(start);
+
+  if (ends.addStartTrig) wps.push(ends.startTrig);
+
+  (picks || []).forEach(p=>{ if (p) wps.push(p); });
+
+  if (ends.addGoalTrig) wps.push(ends.goalTrig);
+
+  wps.push(goal);
+
+  // ORS入力用に lat/lon を確実化
+  return wps.map(p => {
+    const ll = normLL(p) || {lat:NaN, lon:NaN};
+    return {
+      lat: ll.lat,
+      lon: ll.lon,
+      name: p?.name || 'POI'
+    };
+  });
+}
+
 async function runViterbiOnce_API_C(start, goal, restGroups, profile, opt = {}) {
   const T = Array.isArray(restGroups) ? restGroups.length : 0;
   if (!Number.isInteger(T) || T <= 0) return [];
@@ -3973,16 +4077,11 @@ async function runViterbiOnce_API_C(start, goal, restGroups, profile, opt = {}) 
     prev[t] = new Array(Klist[t]).fill(-1);
   }
 
-  // 対策Cの肝：
-  // start→最初、最後→goal をスコア計算から外す（端は0点スタート・0点ゴール）
-  // その代わり「トリガー間（グループ間）」の遷移だけで最適化する
+  // ★対策C：端（start→1st / last→goal）をDPスコアから除外
+  // dp[0][k] は全部0スタート
+  for (let k = 0; k < Klist[0]; k++) dp[0][k] = 0;
 
-  // dp[0][k] は全て0（開始コストなし）
-  for (let k = 0; k < Klist[0]; k++){
-    dp[0][k] = 0;
-  }
-
-  // t-1 → t（ここだけ評価する）
+  // ★トリガー間だけ評価（t-1 → t）
   for (let t = 1; t < T; t++) {
     const curGroup  = restGroups[t];
     const prevGroup = restGroups[t - 1];
@@ -3994,7 +4093,8 @@ async function runViterbiOnce_API_C(start, goal, restGroups, profile, opt = {}) 
       let bestIdx  = -1;
 
       for (let i = 0; i < Klist[t - 1]; i++) {
-        if (!Number.isFinite(dp[t - 1][i])) continue;
+        const prevCost = dp[t - 1][i];
+        if (!Number.isFinite(prevCost)) continue;
 
         const fromPoi = prevGroup[i];
         const leg = await calcLegCostWithApi(fromPoi, toPoi, profile);
@@ -4008,7 +4108,7 @@ async function runViterbiOnce_API_C(start, goal, restGroups, profile, opt = {}) 
           idealEnergyPerLeg
         );
 
-        const cand = dp[t - 1][i] + mse;
+        const cand = prevCost + mse;
         if (cand < bestCost) {
           bestCost = cand;
           bestIdx  = i;
@@ -4020,17 +4120,15 @@ async function runViterbiOnce_API_C(start, goal, restGroups, profile, opt = {}) 
     }
   }
 
-  // 最終選択（最後→goal も足さないので、dp[last] の最小を選ぶ）
+  // ★最後→goalも足さない：dp[last] の最小を採用
   const lastT = T - 1;
   let bestFinalCost = Infinity;
   let bestFinalIdx  = -1;
-
-  for (let k = 0; k < Klist[lastT]; k++) {
+  for (let k = 0; k < Klist[lastT]; k++){
     const v = dp[lastT][k];
-    if (!Number.isFinite(v)) continue;
-    if (v < bestFinalCost) {
+    if (Number.isFinite(v) && v < bestFinalCost){
       bestFinalCost = v;
-      bestFinalIdx  = k;
+      bestFinalIdx = k;
     }
   }
   if (bestFinalIdx < 0 || !Number.isFinite(bestFinalCost)) return [];
@@ -4038,19 +4136,20 @@ async function runViterbiOnce_API_C(start, goal, restGroups, profile, opt = {}) 
   // 復元
   const picks = new Array(T);
   let curIdx  = bestFinalIdx;
-
   for (let t = lastT; t >= 0; t--) {
     picks[t] = restGroups[t][curIdx];
     curIdx   = prev[t][curIdx];
   }
 
-  // stats/feature は「表示用の完全経路」で1回だけ作る
+  // ★表示・CSV用：完全経路(start..goal)で1回だけstatsを作る
   let feature = null;
   let stats   = { dist:[], time:[], energy:[] };
-  let finalScore = bestFinalCost;
+  let finalScore = bestFinalCost; // フォールバック
 
   try {
+    // 端トリガーを条件で差し込む（ここが「先ほどのC」）
     const wps = buildWaypointsForRoute(start, goal, picks, window.restGroups, opt);
+
     const out = await routeLegStatsForWaypoints(wps, profile);
     feature = out?.feature || null;
     if (out?.stats) stats = out.stats;
@@ -4062,8 +4161,8 @@ async function runViterbiOnce_API_C(start, goal, restGroups, profile, opt = {}) 
   }
 
   return [{
-    score: finalScore,
-    rawScore: bestFinalCost,
+    score: finalScore,       // 表示・比較はこっち（総当たりと同じ土俵）
+    rawScore: bestFinalCost, // DP近似（端除外）
     feature,
     stats,
     picks,
@@ -4117,6 +4216,56 @@ function buildWaypointsForRoute(start, goal, picks, restGroups, opt){
     lon: p.lon,
     name: p.name || 'POI'
   }));
+}
+
+function buildVitGroupsWithFixedRest(restGroups, capPerTrigger, variableCount, sorter){
+  const T = Array.isArray(restGroups) ? restGroups.length : 0;
+  const out = [];
+
+  for (let i = 0; i < T; i++){
+    const g = restGroups[i];
+
+    if (i < variableCount){
+      // 場合分けする
+      let pois = Array.isArray(g?.pois) ? g.pois.slice() : [];
+      if (typeof sorter === 'function') pois.sort(sorter);
+      pois = pois.slice(0, capPerTrigger);
+
+      out.push(pois);
+    } else {
+      // 固定する: トリガー地点を候補1個として入れる
+      const r = g?.rest;
+      out.push(r ? [r] : []);
+    }
+  }
+  return out;
+}
+
+async function runViterbi_D_Progressive(start, goal, restGroups, profile, opt = {}){
+  const capPerTrigger = Math.max(1, Number(opt.capPerTrigger) || 5);
+  const sorter = opt.sorter || null;
+
+  const T = Array.isArray(restGroups) ? restGroups.length : 0;
+  const allResults = [];
+
+  for (let variableCount = 1; variableCount <= T; variableCount++){
+    const vitGroups = buildVitGroupsWithFixedRest(
+      restGroups,
+      capPerTrigger,
+      variableCount,
+      sorter
+    );
+
+    const list = await runViterbiOnce_API(start, goal, vitGroups, profile);
+    const best = (Array.isArray(list) && list.length) ? list[0] : null;
+
+    allResults.push({
+      variableCount,
+      best
+    });
+  }
+
+  return allResults;
 }
 
 </script>
