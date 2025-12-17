@@ -235,12 +235,20 @@ function makeCandGroupsFromRestGroups(restGroups, cap=5, sorter=null){
   return (restGroups || []).map((g, i)=>{
     const arr = getPoisGroup(g);
     if(!arr.length) throw new Error(`トリガー#${i+1} に候補POIがありません`);
+
     const out = arr.slice();
     if (typeof sorter === 'function') out.sort(sorter);
-    return out.slice(0, Math.min(cap, out.length));
+
+    const picked = out.slice(0, Math.min(cap, out.length));
+
+    // ★追加：このトリガーで採用された候補(0..cap-1)にだけ番号付け
+    for (let b = 0; b < picked.length; b++){
+      ensurePoiName(picked[b], i, b);
+    }
+
+    return picked;
   });
 }
-
 
 // HTML要素取得
 function $(id){ return document.getElementById(id); }
@@ -4266,6 +4274,18 @@ async function runViterbi_D_Progressive(start, goal, restGroups, profile, opt = 
   }
 
   return allResults;
+}
+
+// 名前が無いPOIに POI{triggerIndex}.{id} を付ける
+function ensurePoiName(poi, triggerIndex, idInTrigger){
+  if (!poi) return poi;
+
+  const name = (poi.name ?? poi.label ?? poi.title ?? '').toString().trim();
+  if (name) return poi; // 既に名前があるなら触らない
+
+  // 表示用として name を入れる（必要なら _autoName にしてもOK）
+  poi.name = `POI${triggerIndex}.${idInTrigger}`;
+  return poi;
 }
 
 </script>
