@@ -3145,6 +3145,81 @@ try {
   panel.textContent += '\n[対策D エラー] ' + (e.message || e) + '\n';
 }
 
+// ----------------------------------------------------------
+// 7）対策E：Viterbi（2点DP）+区間キャッシュ
+// ----------------------------------------------------------
+panel.textContent += '\n--- 対策E：Viterbi（2点DP + 区間キャッシュ） ---\n';
+try {
+  const orsBefore = API_USED.orsTotal;
+  const ovpBefore = API_USED.overpassTotal;
+
+  __legCache.clear(); // ★測定を綺麗にするならここでクリア（任意）
+
+  const capPerTrigger = Math.max(1, Number($('poiLimit')?.value) || 5);
+  const groupsE = makeCandGroupsFromRestGroups(restGroups, capPerTrigger);
+
+  const t0 = performance.now();
+  const eList = await runViterbiOnce_API_E_Cached(start, goal, groupsE, profile);
+  const t1 = performance.now();
+
+  const ms  = t1 - t0;
+  const ors = API_USED.orsTotal - orsBefore;
+  const ov  = API_USED.overpassTotal - ovpBefore;
+
+  if (!eList || !eList.length) {
+    panel.textContent += '(候補なし)\n';
+  } else {
+    attachBfRank(eList, bfRankMap);
+
+    panel.textContent += `処理時間: ${ms.toFixed(1)} ms\n`;
+    panel.textContent += `ORS呼び出し: ${ors} 回\n`;
+    panel.textContent += `Overpass呼び出し: ${ov} 回\n\n`;
+
+    showAlgoListInPanel(panel, eList, 'viterbi_E_cache');
+    pushAlgoResultsForCsv('viterbi_E_cache','対策E：Viterbi（2点DP + キャッシュ）',eList,ms,ors,ov);
+  }
+} catch (e) {
+  console.error('[viterbi_E_cache] error', e);
+  panel.textContent += '\n[対策E エラー] ' + (e.message || e) + '\n';
+}
+
+// ----------------------------------------------------------
+// 8）対策F：TopK候補→一気に経由地付きORSで再評価（全件）
+// ----------------------------------------------------------
+panel.textContent += '\n--- 対策F：TopK候補→一気に経由地付きORSで再評価 ---\n';
+try {
+  const orsBefore = API_USED.orsTotal;
+  const ovpBefore = API_USED.overpassTotal;
+
+  const capPerTrigger = Math.max(1, Number($('poiLimit')?.value) || 5);
+  const groupsF = makeCandGroupsFromRestGroups(restGroups, capPerTrigger, defaultLinearSorter);
+
+  const t0 = performance.now();
+  const fOpt = getAbViterbiOpt(); // 既存UI（auto/beamWidth/topK）を流用できる
+  const fList = await runViterbi_F_TopN_ThenFullORS(start, goal, groupsF, profile, fOpt);
+  const t1 = performance.now();
+
+  const ms  = t1 - t0;
+  const ors = API_USED.orsTotal - orsBefore;
+  const ov  = API_USED.overpassTotal - ovpBefore;
+
+  if (!fList || !fList.length) {
+    panel.textContent += '(候補なし)\n';
+  } else {
+    attachBfRank(fList, bfRankMap);
+
+    panel.textContent += `処理時間: ${ms.toFixed(1)} ms\n`;
+    panel.textContent += `ORS呼び出し: ${ors} 回\n`;
+    panel.textContent += `Overpass呼び出し: ${ov} 回\n\n`;
+
+    showAlgoListInPanel(panel, fList.slice(0,3), 'viterbi_F_fullrerank');
+    pushAlgoResultsForCsv('viterbi_F_fullrerank','対策F：TopK→一気にORS再評価',fList,ms,ors,ov);
+  }
+} catch (e) {
+  console.error('[viterbi_F_fullrerank] error', e);
+  panel.textContent += '\n[対策F エラー] ' + (e.message || e) + '\n';
+}
+
     // ----------------------------------------------------------
     // 全体時間
     // ----------------------------------------------------------
@@ -4405,6 +4480,138 @@ function ensurePoiName(poi, triggerIndex, idInTrigger){
   // 表示用として name を入れる（必要なら _autoName にしてもOK）
   poi.name = `POI${triggerIndex}.${idInTrigger}`;
   return poi;
+}
+
+// ======================================================
+// 2点区間ORSのキャッシュ（同じfrom/to/profileなら再利用）
+// ======================================================
+const __legCache = new Map();
+
+function legKey(from, to, profile, decimals=6){
+  const f = x => Number(x).toFixed(decimals);
+  const aLat = from?.lat ?? from?.latitude ?? from?.y;
+  const aLon = from?.lon ?? from?.lng ?? from?.longitude ?? from?.x;
+  const bLat = to?.lat   ?? to?.latitude   ?? to?.y;
+  const bLon = to?.lon   ?? to?.lng ?? to?.longitude ?? to?.x;
+  return `${profile}::${f(aLat)},${f(aLon)}=>${f(bLat)},${f(bLon)}`;
+}
+
+async function calcLegCostWithApiCached(from, to, profile){
+  const key = legKey(from, to, profile);
+  if (__legCache.has(key)) return __legCache.get(key);
+
+  const leg = await calcLegCostWithApi(from, to, profile);
+  __legCache.set(key, leg);
+  return leg;
+}
+
+// ======================================================
+// 対策E：Viterbi（2点DP）+ 2点区間キャッシュ
+//   - 最適性は維持
+//   - “同じ区間の重複呼び出し”が減るとAPI回数が減る
+// ======================================================
+async function runViterbiOnce_API_E_Cached(start, goal, restGroups, profile){
+  // ここは runViterbiOnce_API をコピって
+  // calcLegCostWithApi(...) を calcLegCostWithApiCached(...) に置換するだけでOK
+
+  const T = Array.isArray(restGroups) ? restGroups.length : 0;
+  if (T <= 0) return [];
+
+  const ideals = getIdealPerLegs();
+  const Klist = restGroups.map(g => Array.isArray(g) ? g.length : 0);
+  if (Klist.some(k => k <= 0)) return [];
+
+  const dp=[], prev=[];
+  for(let t=0;t<T;t++){
+    dp[t]=new Array(Klist[t]).fill(Infinity);
+    prev[t]=new Array(Klist[t]).fill(-1);
+  }
+
+  // start -> 0
+  for (let k=0;k<Klist[0];k++){
+    const poi = restGroups[0][k];
+    const leg = await calcLegCostWithApiCached(start, poi, profile);
+    const mse = legMseCost(leg.distKm, leg.timeMin, leg.energyKj,
+                           ideals.idealDistPerLeg, ideals.idealTimePerLeg, ideals.idealEnergyPerLeg);
+    dp[0][k]=mse;
+  }
+
+  // t-1 -> t
+  for (let t=1;t<T;t++){
+    for (let j=0;j<Klist[t];j++){
+      const toPoi = restGroups[t][j];
+      let best=Infinity, bestIdx=-1;
+
+      for (let i=0;i<Klist[t-1];i++){
+        if (!Number.isFinite(dp[t-1][i])) continue;
+        const fromPoi = restGroups[t-1][i];
+        const leg = await calcLegCostWithApiCached(fromPoi, toPoi, profile);
+        const mse = legMseCost(leg.distKm, leg.timeMin, leg.energyKj,
+                               ideals.idealDistPerLeg, ideals.idealTimePerLeg, ideals.idealEnergyPerLeg);
+        const cand = dp[t-1][i] + mse;
+        if (cand < best){ best=cand; bestIdx=i; }
+      }
+      dp[t][j]=best;
+      prev[t][j]=bestIdx;
+    }
+  }
+
+  // last -> goal
+  const lastT=T-1;
+  let bestFinal=Infinity, bestIdx=-1;
+  for (let k=0;k<Klist[lastT];k++){
+    if (!Number.isFinite(dp[lastT][k])) continue;
+    const poi = restGroups[lastT][k];
+    const leg = await calcLegCostWithApiCached(poi, goal, profile);
+    const mse = legMseCost(leg.distKm, leg.timeMin, leg.energyKj,
+                           ideals.idealDistPerLeg, ideals.idealTimePerLeg, ideals.idealEnergyPerLeg);
+    const cand = dp[lastT][k] + mse;
+    if (cand < bestFinal){ bestFinal=cand; bestIdx=k; }
+  }
+  if (bestIdx<0) return [];
+
+  // 復元
+  const picks=new Array(T);
+  let cur=bestIdx;
+  for(let t=lastT;t>=0;t--){
+    picks[t]=restGroups[t][cur];
+    cur=prev[t][cur];
+  }
+
+  // 表示用 stats を1回作る
+  let feature=null, stats={dist:[],time:[],energy:[]};
+  try{
+    const wps = [start, ...picks, goal].map(p=>({lat:p.lat, lon:p.lon, name:p.name||'POI'}));
+    const out = await routeLegStatsForWaypoints(wps, profile);
+    feature = out?.feature || null;
+    if(out?.stats) stats = out.stats;
+  }catch(e){}
+
+  return [{
+    score: finalScoreFromStats(stats, { idealEnergyPerLeg: ideals.idealEnergyPerLeg }),
+    rawScore: bestFinal,
+    feature,
+    stats,
+    picks,
+    picksByTrigger: picks
+  }];
+}
+
+// ======================================================
+// 対策F：TopK候補を作ってから “一気に経由地付きORS”で再評価
+//   - TopK生成は近似（ビーム）
+//   - 最終順位は routeLegStatsForWaypoints の1回呼びで確定
+// ======================================================
+async function runViterbi_F_TopN_ThenFullORS(start, goal, groups, profile, opt = {}){
+  // 1) 近似でTopK候補（ビーム）
+  const topKList = await runViterbiTopK_API(start, goal, groups, profile, opt);
+
+  // 2) 一気に経由地付きORSで再評価（既存）
+  // returnAll=true にすると “再評価済み一覧” が取れる
+  return await rerankTopKCandsByExactScore(start, goal, topKList, profile, {
+    dedupe: true,
+    returnAll: true
+  });
 }
 
 </script>
