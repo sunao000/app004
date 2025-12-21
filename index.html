@@ -4376,55 +4376,6 @@ async function runViterbiOnce_API_C_BeamFull(start, goal, groups, profile, opt =
   return beam.length ? [beam[0]] : [];
 }
 
-
-function distMeters(a, b){
-  if (!a || !b) return Infinity;
-  if (window.L && L.latLng){
-    return L.latLng(a.lat, a.lon).distanceTo(L.latLng(b.lat, b.lon));
-  }
-  // Leaflet無い前提のフォールバック（雑でOKなら）
-  const dx = (a.lat - b.lat) * 111320;
-  const dy = (a.lon - b.lon) * 111320;
-  return Math.hypot(dx, dy);
-}
-
-function maybeEndTriggersAsWaypoints(start, goal, restGroups, opt){
-  const T = Array.isArray(restGroups) ? restGroups.length : 0;
-  if (!T) return { addStartTrig:false, addGoalTrig:false, startTrig:null, goalTrig:null };
-
-  const thr = Number(opt?.adjacentMeters) || 80;
-
-  const startTrig = restGroups[0]?.rest || null;
-  const goalTrig  = restGroups[T-1]?.rest || null;
-
-  const addStartTrig = !!(opt?.includeEndTriggers && startTrig && distMeters(start, startTrig) <= thr);
-  const addGoalTrig  = !!(opt?.includeEndTriggers && goalTrig  && distMeters(goal,  goalTrig)  <= thr);
-
-  return { addStartTrig, addGoalTrig, startTrig, goalTrig };
-}
-
-// 表示・stats計算用のwaypointsを作る（必要なら端トリガーを差し込む）
-function buildWaypointsForRoute(start, goal, picks, restGroups, opt){
-  const ends = maybeEndTriggersAsWaypoints(start, goal, restGroups, opt);
-
-  const wps = [];
-  wps.push(start);
-
-  if (ends.addStartTrig) wps.push(ends.startTrig);
-
-  (picks || []).forEach(p=>{ if (p) wps.push(p); });
-
-  if (ends.addGoalTrig) wps.push(ends.goalTrig);
-
-  wps.push(goal);
-
-  return wps.map(p => ({
-    lat: p.lat,
-    lon: p.lon,
-    name: p.name || 'POI'
-  }));
-}
-
 function buildVitGroupsWithFixedRest(restGroups, capPerTrigger, variableCount, sorter){
   const T = Array.isArray(restGroups) ? restGroups.length : 0;
   const out = [];
