@@ -260,6 +260,13 @@ const Physics = {
     return (pot + res) / 1000;
   },
 
+  // 標準偏差 (Standard Deviation)
+  stdDev(arr) {
+    if (!arr || !arr.length) return 0;
+    const m = arr.reduce((a,b)=>a+b,0)/arr.length;
+    return Math.sqrt(arr.reduce((s,v)=>s+(v-m)**2,0)/arr.length);
+  },
+
   // コスト関数: MSE (二乗誤差)
   costMSE(val, ideal) {
     if (!Number.isFinite(val) || !Number.isFinite(ideal)) return Infinity;
