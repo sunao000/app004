@@ -1393,16 +1393,17 @@ setActiveButton(prefer === 'arterial' ? $('btnShowArterial') : $('btnShowFastest
 
 /* ===== 休憩トリガー関連 ===== */
 function logRest(msg){ $('restDebug').textContent += msg + "\n"; }
-async function totalEnergyKJ(feature,mass,flat){
+async function totalEnergyKJ(feature, mass, flat){
   const coords = feature.geometry.coordinates;
-  const segs   = feature.properties.segments||[];
+  const segs = feature.properties.segments||[];
   let tot=0;
   for(const s of segs){
     for(const st of s.steps||[]){
       const [i0,i1]=st.way_points||[0,0];
       const d=st.distance||0;
       const dz = coords[i1].length>=3 ? (coords[i1][2]-coords[i0][2]) : 0;
-      tot += energyStepKJ(d,dz,mass,flat);
+      // ▼ここを修正 (Physicsを使う)
+      tot += Physics.calcEnergy(d, dz);
     }
   }
   return tot;
@@ -1410,10 +1411,9 @@ async function totalEnergyKJ(feature,mass,flat){
 async function makeRestPoints(feature,mass,flat){
   const coords=feature.geometry.coordinates;
   const segs=(feature.properties.segments||[]);
-    // 旅全体の合計（距離は既存の totalDist 代わりに summary.distance を利用）
-  const totalD = feature?.properties?.summary?.distance || 0;        // m
-  const totalT = feature?.properties?.summary?.duration || 0;        // s
-  const totalE = await totalEnergyKJ(feature, mass, flat);           // kJ
+  const totalD = feature?.properties?.summary?.distance || 0;
+  const totalT = feature?.properties?.summary?.duration || 0;
+  const totalE = await totalEnergyKJ(feature, mass, flat);
 
     // ▼▼ 追加：全トリガ共通の「スキップ判定 & push」ヘルパ ▼▼
   function getSkipUI() {
@@ -1490,7 +1490,7 @@ async function makeRestPoints(feature,mass,flat){
   const thr=basis==='time' ? Number($('restMinutes').value)*60 : Number($('restKJ').value);
   let raw=[];
 
-  // 積算トリガ
+// 積算トリガ
   if($('optAccum').checked){
     let acc=0;
     for(const s of segs){
@@ -1498,81 +1498,65 @@ async function makeRestPoints(feature,mass,flat){
         const [i0,i1]=st.way_points||[0,0];
         const d=st.distance||0, t=st.duration||0;
         const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
-        const dE = energyStepKJ(d,dz,mass,flat);
-        // ★ 累積（秒 / kJ）を更新
+        
+        // ★修正箇所1
+        const dE = Physics.calcEnergy(d, dz);
+
         cumTsec += t;
         cumEkJ  += dE;
         acc += (basis==='time') ? t : dE;
-       if (acc >= thr) {
-  const candLat = coords[i1][1];
-  const candLon = coords[i1][0];
-  const hereCum = cumDist[i1]; // m
-
-  // 積算は cumTsec / cumEkJ を渡せる（精密ログ）
-  pushIfNotSkipped(raw, hereCum, candLat, candLon, '[ACCUM]', /*progTsec*/cumTsec, /*progEkJ*/cumEkJ);
-  acc = 0; // 次ターゲットへ
-}
-
-
+        if (acc >= thr) {
+          const candLat = coords[i1][1];
+          const candLon = coords[i1][0];
+          const hereCum = cumDist[i1]; // m
+          pushIfNotSkipped(raw, hereCum, candLat, candLon, '[ACCUM]', cumTsec, cumEkJ);
+          acc = 0; 
+        }
       }
     }
   }
 
-  // 統計トリガ（安全化パッチ）
+  // 統計トリガ（変更なし）
   if ($('optStatTrigger').checked) {
     const meanRaw = Number($('statMean').value);
     const varRaw  = Number($('statVar').value);
-
     const mean  = Number.isFinite(meanRaw) ? meanRaw : 0;
     const sigma = (Number.isFinite(varRaw) && varRaw >= 0) ? Math.sqrt(varRaw) : 0;
-
-    // Box-Muller：0 の log 回避
     const normal = () => {
       let u = Math.random(); if (u <= 1e-12) u = 1e-12;
       let v = Math.random();
       return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
     };
-
-    // 休憩間隔の下限（km）。必要なら 0.3～1.0 で好み調整
     const MIN_KM = 0.5;
-
     let target = Math.max(MIN_KM, mean + sigma * normal());
     let accKm  = 0;
-
     for (const s of segs) {
       for (const st of s.steps || []) {
         const [i0, i1] = st.way_points || [0, 0];
-        const d = st.distance || 0;        // m
+        const d = st.distance || 0;
         accKm += d / 1000;
-
         if (accKm >= target) {
-  const hereCum = cumDist[i1];          // m
-  const candLat = coords[i1][1];
-  const candLon = coords[i1][0];
-
-  // 統計は実測の時間/エネ累積を持っていない→距離比で近似
-  pushIfNotSkipped(raw, hereCum, candLat, candLon, '[STAT]');
-  target = Math.max(MIN_KM, mean + sigma * normal());
-  accKm = 0;
-}
-
+          const hereCum = cumDist[i1];
+          const candLat = coords[i1][1];
+          const candLon = coords[i1][0];
+          pushIfNotSkipped(raw, hereCum, candLat, candLon, '[STAT]');
+          target = Math.max(MIN_KM, mean + sigma * normal());
+          accKm = 0;
+        }
       }
     }
   }
 
-
-   // 割合トリガ（安全化パッチ）
+   // 割合トリガ
   if ($('optPercentTrigger').checked) {
-    // 入力値の正規化（1%～90%に丸め：好みで調整可）
     let stepPct = Number($('percentStep').value) / 100;
     if (!Number.isFinite(stepPct)) stepPct = 0.25;
     stepPct = Math.min(0.9, Math.max(0.01, stepPct));
 
     const metric = $('percentMetric').value;
-
-    const totalDist   = feature.properties.summary.distance;     // m
-    const totalTime   = feature.properties.summary.duration;     // s
-    const totalEnergy = await totalEnergyKJ(feature, mass, flat); // kJ
+    const totalDist    = feature.properties.summary.distance;
+    const totalTime    = feature.properties.summary.duration;
+    const totalEnergy = await totalEnergyKJ(feature, mass, flat); 
 
     const total = (metric === 'distance') ? totalDist
                 : (metric === 'time')     ? totalTime
@@ -1581,7 +1565,6 @@ async function makeRestPoints(feature,mass,flat){
     if (!(Number.isFinite(total) && total > 0)) {
       logRest('[PERCENT] 総量が0または非数のためスキップ');
     } else {
-      // 閾値は「累積ターゲット」を順に足していく方式
       let nextThreshold = stepPct * total;
       let progressed    = 0;
       const hasEle = coords[0].length >= 3;
@@ -1589,25 +1572,23 @@ async function makeRestPoints(feature,mass,flat){
       for (const s of segs) {
         for (const st of s.steps || []) {
           const [i0, i1] = st.way_points || [0, 0];
-          const d  = st.distance || 0;  // m
-          const t  = st.duration || 0;  // s
+          const d  = st.distance || 0;
+          const t  = st.duration || 0;
           const dz = hasEle ? ((coords[i1][2] || 0) - (coords[i0][2] || 0)) : 0;
-          const dE = energyStepKJ(d, dz, mass, flat);
+          
+          const dE = Physics.calcEnergy(d, dz);
 
           if (metric === 'distance') progressed += d;
           else if (metric === 'time') progressed += t;
           else progressed += dE;
 
-          // 1ステップで複数回閾値を跨ぐ可能性があるので while で対応
           while (progressed >= nextThreshold) {
-  const hereCum = cumDist[i1];      // m
-  const candLat = coords[i1][1];
-  const candLon = coords[i1][0];
-
-  // 時間/エネを実測で持ってないケース→距離比で近似
-  pushIfNotSkipped(raw, hereCum, candLat, candLon, '[PERCENT]');
-  nextThreshold += stepPct * total;
-}
+            const hereCum = cumDist[i1];
+            const candLat = coords[i1][1];
+            const candLon = coords[i1][0];
+            pushIfNotSkipped(raw, hereCum, candLat, candLon, '[PERCENT]');
+            nextThreshold += stepPct * total;
+          }
         }
       }
     }
