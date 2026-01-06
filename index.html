@@ -3367,9 +3367,10 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
   sorted.forEach((r, idx)=>{
     const rank = idx + 1;
 
-    const sigmaDist   = stdDev(r.stats && r.stats.dist ? r.stats.dist : []);
-    const sigmaTime   = stdDev(r.stats && r.stats.time ? r.stats.time : []);
-    const sigmaEnergy = stdDev(r.stats && r.stats.energy ? r.stats.energy : []);
+    // ▼修正箇所: Physics.stdDev を使う
+    const sigmaDist   = Physics.stdDev(r.stats && r.stats.dist ? r.stats.dist : []);
+    const sigmaTime   = Physics.stdDev(r.stats && r.stats.time ? r.stats.time : []);
+    const sigmaEnergy = Physics.stdDev(r.stats && r.stats.energy ? r.stats.energy : []);
 
     const scoreForCsv = unifiedScoreForCompare(r, ideals.idealEnergyPerLeg);
 
@@ -3407,6 +3408,50 @@ function showAlgoListInPanel(panel, list, algoCode){
     panel.textContent += '(候補なし)\n';
     return;
   }
+  
+  const MAX_SHOW = 3;
+  const ideals = getIdealPerLegs();
+  const sorted = sortResultsByUnifiedScore(list, ideals.idealEnergyPerLeg);
+  const top = sorted.slice(0, MAX_SHOW);
+
+  top.forEach((r, idx)=>{
+    const rank = idx + 1;
+
+    const score    = r.score    ?? null;
+    const rawScore = r.rawScore ?? null;
+
+    const stats   = r.stats || {};
+    const distArr = Array.isArray(stats.dist)   ? stats.dist   : [];
+    const timeArr = Array.isArray(stats.time)   ? stats.time   : [];
+    const eneArr  = Array.isArray(stats.energy) ? stats.energy : [];
+
+    // ▼修正箇所: Physics.stdDev を使う
+    const sigDist = distArr.length ? Physics.stdDev(distArr) : null;
+    const sigTime = timeArr.length ? Physics.stdDev(timeArr) : null;
+    const sigEn   = eneArr.length  ? Physics.stdDev(eneArr)  : null;
+
+    const picksArr = (r.picks || r.picksByTrigger || []);
+    const poiNames = picksArr
+      .filter(Boolean)
+      .map(p => p.name || 'POI')
+      .join(' -> ');
+
+    panel.textContent += `#${rank}  score=${score}\n`;
+    if (rawScore != null) panel.textContent += `  rawScore=${rawScore}\n`;
+
+    if (r.bfRank != null) {
+      panel.textContent += `  bf_rank=${r.bfRank}\n`;
+    } else {
+      panel.textContent += `  bf_rank=(圏外/不一致)\n`;
+    }
+
+    if (sigDist != null) panel.textContent += `  σ距離=${sigDist.toFixed(3)}\n`;
+    if (sigTime != null) panel.textContent += `  σ時間=${sigTime.toFixed(3)}\n`;
+    if (sigEn   != null) panel.textContent += `  σエネルギー=${sigEn.toFixed(3)}\n`;
+
+    panel.textContent += `  POI: ${poiNames}\n\n`;
+  });
+}
   
   const MAX_SHOW = 3;
   const ideals = getIdealPerLegs();
@@ -3498,7 +3543,7 @@ function downloadAlgoCompareCsv(){
 }
 
 function renderBruteforceAllResults(results){
-  const box = $('bruteforceAllList');
+  const box = $('bruteforceAllList'); // もし $ が未定義なら document.getElementById('bruteforceAllList')
   const btn = $('btnDownloadBruteforceCsv');
   if (!box) return;
 
@@ -3515,10 +3560,11 @@ function renderBruteforceAllResults(results){
   const lines = [];
   results.forEach((r, idx) => {
     const rank = idx + 1;
+    // ▼修正箇所: Physics.stdDev を使う
     const sig = {
-      dist: stdDev(r.stats?.dist || []),
-      time: stdDev(r.stats?.time || []),
-      energy: stdDev(r.stats?.energy || [])
+      dist: Physics.stdDev(r.stats?.dist || []),
+      time: Physics.stdDev(r.stats?.time || []),
+      energy: Physics.stdDev(r.stats?.energy || [])
     };
     const names = (r.picks || r.picksByTrigger || [])
       .filter(Boolean)
@@ -3557,10 +3603,11 @@ function downloadBruteforceCsv(){
   const bodyRows = rows.map((r, idx) => {
     const rank = idx + 1;
 
+    // ▼修正箇所: Physics.stdDev を使う
     const sig = {
-      dist: stdDev(r.stats?.dist || []),
-      time: stdDev(r.stats?.time || []),
-      energy: stdDev(r.stats?.energy || [])
+      dist: Physics.stdDev(r.stats?.dist || []),
+      time: Physics.stdDev(r.stats?.time || []),
+      energy: Physics.stdDev(r.stats?.energy || [])
     };
 
     const names = (r.picks || r.picksByTrigger || [])
@@ -3582,7 +3629,6 @@ function downloadBruteforceCsv(){
   const blob = buildCsvBlob(header, bodyRows);
   downloadBlob(blob, 'bruteforce_all_combos.csv');
 }
-
 // トリガー ↔ POI のビームを全部消す
 function clearRestBeams() {
   if (restBeamLayer) {
