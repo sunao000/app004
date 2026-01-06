@@ -2574,7 +2574,10 @@ function buildCums(feature, mass=75, flat=18){
       const [i0,i1]=st.way_points||[0,0];
       const d=st.distance||0, t=st.duration||0;
       const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
-      const dE = energyStepKJ(d,dz,mass,flat);
+      
+      // ▼修正箇所：energyStepKJ ではなく Physics.calcEnergy を使う
+      const dE = Physics.calcEnergy(d, dz);
+      
       cum.D.push(cum.D.at(-1)+d);
       cum.T.push(cum.T.at(-1)+t);
       cum.E.push(cum.E.at(-1)+dE);
