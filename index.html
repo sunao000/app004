@@ -3425,7 +3425,7 @@ function showAlgoListInPanel(panel, list, algoCode){
     const timeArr = Array.isArray(stats.time)   ? stats.time   : [];
     const eneArr  = Array.isArray(stats.energy) ? stats.energy : [];
 
-    // ▼修正箇所: Physics.stdDev を使う
+    // ▼Physics.stdDev を使用
     const sigDist = distArr.length ? Physics.stdDev(distArr) : null;
     const sigTime = timeArr.length ? Physics.stdDev(timeArr) : null;
     const sigEn   = eneArr.length  ? Physics.stdDev(eneArr)  : null;
@@ -3439,50 +3439,6 @@ function showAlgoListInPanel(panel, list, algoCode){
     panel.textContent += `#${rank}  score=${score}\n`;
     if (rawScore != null) panel.textContent += `  rawScore=${rawScore}\n`;
 
-    if (r.bfRank != null) {
-      panel.textContent += `  bf_rank=${r.bfRank}\n`;
-    } else {
-      panel.textContent += `  bf_rank=(圏外/不一致)\n`;
-    }
-
-    if (sigDist != null) panel.textContent += `  σ距離=${sigDist.toFixed(3)}\n`;
-    if (sigTime != null) panel.textContent += `  σ時間=${sigTime.toFixed(3)}\n`;
-    if (sigEn   != null) panel.textContent += `  σエネルギー=${sigEn.toFixed(3)}\n`;
-
-    panel.textContent += `  POI: ${poiNames}\n\n`;
-  });
-}
-  
-  const MAX_SHOW = 3;
-  const ideals = getIdealPerLegs();
-  const sorted = sortResultsByUnifiedScore(list, ideals.idealEnergyPerLeg);
-  const top = sorted.slice(0, MAX_SHOW);
-
-  top.forEach((r, idx)=>{
-    const rank = idx + 1;
-
-    const score    = r.score    ?? null;
-    const rawScore = r.rawScore ?? null;
-
-    const stats   = r.stats || {};
-    const distArr = Array.isArray(stats.dist)   ? stats.dist   : [];
-    const timeArr = Array.isArray(stats.time)   ? stats.time   : [];
-    const eneArr  = Array.isArray(stats.energy) ? stats.energy : [];
-
-    const sigDist = distArr.length ? stdDev(distArr) : null;
-    const sigTime = timeArr.length ? stdDev(timeArr) : null;
-    const sigEn   = eneArr.length  ? stdDev(eneArr)  : null;
-
-    const picksArr = (r.picks || r.picksByTrigger || []);
-    const poiNames = picksArr
-      .filter(Boolean)
-      .map(p => p.name || 'POI')
-      .join(' -> ');
-
-    panel.textContent += `#${rank}  score=${score}\n`;
-    if (rawScore != null) panel.textContent += `  rawScore=${rawScore}\n`;
-
-    // ★追加：総当たり順位
     if (r.bfRank != null) {
       panel.textContent += `  bf_rank=${r.bfRank}\n`;
     } else {
