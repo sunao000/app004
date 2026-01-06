@@ -1619,9 +1619,13 @@ async function calcLegStats(feature, mass, flat){
       const d  = step.distance || 0;  // m
       const t  = step.duration || 0;  // s
       const dz = hasEle ? ((coords[i1][2] || 0) - (coords[i0][2] || 0)) : 0;
+      
       legDist.push(d / 1000);
       legTime.push(t / 60);
-      legEnergy.push(energyStepKJ(d, dz, mass, flat));
+      
+      // ▼▼ ここが修正ポイント！ ▼▼
+      // energyStepKJ(...) ではなく Physics.calcEnergy(...) を使う
+      legEnergy.push(Physics.calcEnergy(d, dz));
     }
   }
   return {dist:legDist, time:legTime, energy:legEnergy};
