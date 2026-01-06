@@ -2128,11 +2128,6 @@ function showTop3Combos(resultList) {
     box.appendChild(wrap);
   });
 }
-  function legMseCost(d, t, e, ideald, idealt, ideale){
-  const ee = e - ideale;
-  return ee*ee;
-}
-
 
 // stats({dist[], time[], energy[]}) からルート全体のMSEスコアを計算
 function routeMseScoreFromStats(stats, idealDistPerLeg, idealTimePerLeg, idealEnergyPerLeg){
