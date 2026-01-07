@@ -1071,7 +1071,7 @@ async function nomSearch(q){
 
 // ★変更点1: 待機時間を 1100ms -> 2500ms (2.5秒) に変更
 // 無料枠は「1分間に40回」なので、1回あたり最低1.5秒は必要。余裕を持って2.5秒にします。
-const ORS_INTERVAL = 2500; 
+const ORS_INTERVAL = 1750; 
 
 async function dir(body, profile) {
   // 現在時刻と前回の差分を計算
