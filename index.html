@@ -5213,10 +5213,6 @@ function updateManualRouteUI() {
 window.drawManualComparison = async function() {
   console.log('[ManualRoute] ボタンクリック検知'); 
   
-  // ★デバッグ用: もしボタンを押してもこのアラートが出ない場合、
-  // HTML側の onclick="drawManualComparison()" の記述ミスです。
-  // alert('処理を開始します'); 
-
   const infoBox = document.getElementById('manualRouteInfo');
   const btn = document.getElementById('btnDrawManualRoute');
   const profile = document.getElementById('profileSelect')?.value || 'cycling-road'; 
@@ -5269,9 +5265,6 @@ window.drawManualComparison = async function() {
       }
       
       if (sel.disabled || sel.value == -1) {
-         // 候補なしの場合は null を入れるか、エラーにするか。
-         // ここでは「選択必須」としてエラーを出します。
-         // (候補なしがある場合は比較しようがないため)
          throw new Error(`トリガー#${i+1} のPOIが選択されていません（候補なし）。`);
       }
       
@@ -5291,7 +5284,6 @@ window.drawManualComparison = async function() {
     if (typeof clearRouteLayers === 'function') {
       clearRouteLayers();
     } else if (typeof routeLayers !== 'undefined') {
-      // routeLayers変数が手動管理の場合
       Object.values(routeLayers).forEach(l => map.removeLayer(l));
       routeLayers = {};
     }
@@ -5328,7 +5320,6 @@ window.drawManualComparison = async function() {
     if (showBatch) {
       const wps = [start, ...picks, goal].map(p => ({ lat: p.lat, lon: p.lon }));
       
-      // routeLegStatsForWaypoints が存在するかチェック
       if (typeof routeLegStatsForWaypoints !== 'function') {
         throw new Error('関数 routeLegStatsForWaypoints が見つかりません');
       }
@@ -5360,7 +5351,6 @@ window.drawManualComparison = async function() {
         
         const coords = [[from.lon, from.lat], [to.lon, to.lat]];
         
-        // dir が存在するかチェック
         if (typeof dir !== 'function') throw new Error('関数 dir が見つかりません');
 
         const res = await dir({ coordinates: coords, elevation: true }, profile);
@@ -5387,11 +5377,28 @@ window.drawManualComparison = async function() {
 
     if (infoBox) infoBox.textContent = logs.join('\n');
     
-    // ズーム調整
-    if (typeof map !== 'undefined' && typeof markerLayer !== 'undefined') {
-       const group = new L.featureGroup([manualRouteLayerGroup, markerLayer]);
-       const b = group.getBounds();
-       if (b.isValid()) map.fitBounds(b.pad(0.1));
+    // -------------------------------------------------
+    // ★修正箇所: ズーム調整ロジックを安全に変更
+    // -------------------------------------------------
+    if (typeof map !== 'undefined') {
+       // グループの配列を作るのではなく、中身のレイヤーを全部取り出して合体させる
+       const allLayers = [];
+       
+       if (manualRouteLayerGroup) {
+         manualRouteLayerGroup.eachLayer(l => allLayers.push(l));
+       }
+       if (typeof markerLayer !== 'undefined' && markerLayer) {
+         markerLayer.eachLayer(l => allLayers.push(l));
+       }
+
+       if (allLayers.length > 0) {
+         // レイヤーのリストからFeatureGroupを一時的に作って範囲計算
+         const group = new L.featureGroup(allLayers);
+         const b = group.getBounds();
+         if (b.isValid()) {
+           map.fitBounds(b.pad(0.1));
+         }
+       }
     }
 
   } catch (e) {
