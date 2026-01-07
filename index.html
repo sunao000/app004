@@ -5166,91 +5166,134 @@ function updateManualRouteUI() {
   console.log('[ManualRoute] UI updated successfully');
 }
 
-// 2. 比較描画の実行関数（地図リセット機能付き）
-async function drawManualComparison() {
-  console.log('[ManualRoute] ボタンが押されました'); // ★反応チェック用ログ
+/* ==============================================
+   手動ルート比較機能（デバッグ・安全強化版）
+   ============================================== */
+
+// ボタンから確実に呼べるように window に登録
+window.drawManualComparison = async function() {
+  console.log('[ManualRoute] ボタンクリック検知'); 
+  
+  // ★デバッグ用: もしボタンを押してもこのアラートが出ない場合、
+  // HTML側の onclick="drawManualComparison()" の記述ミスです。
+  // alert('処理を開始します'); 
 
   const infoBox = document.getElementById('manualRouteInfo');
   const btn = document.getElementById('btnDrawManualRoute');
   const profile = document.getElementById('profileSelect')?.value || 'cycling-road'; 
 
-  // データ取得
-  const groups = getGlobalRestGroups();
-  if (!groups || !groups.length) {
-    alert('休憩トリガーデータがありません。リスト更新ボタンを押してみてください。');
-    return;
+  // ボタン連打防止
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '初期化中...';
   }
-
-  const start = pts.find(p => p.type === 'start') || pts[0];
-  const goal = pts.find(p => p.type === 'goal') || pts[pts.length - 1];
-  if (!start || !goal) {
-    alert('スタート/ゴールがありません');
-    return;
-  }
-
-  // UIから選択されたPOIを回収
-  const picks = [];
-  for (let i = 0; i < groups.length; i++) {
-    const sel = document.getElementById(`manualSel_${i}`);
-    if (!sel) {
-      alert('UIが壊れています。「更新」ボタンを押してリストを再生成してください。');
-      return;
-    }
-    // 候補なし(-1)の場合は null を入れておく（スキップ扱い）
-    // ※もし「必ず選ばないとダメ」ならここでalertしてreturn
-    if (sel.disabled || sel.value == -1) {
-       // 今回は「候補なし」のトリガーはスキップしてつなぐ仕様にします
-       // picks.push(null); 
-       // スキップする場合はpushしない
-    } else {
-      const pIdx = Number(sel.value);
-      const p = groups[i].pois[pIdx];
-      picks.push(p);
-    }
-  }
-
-  // ▼▼▼ 地図のリセット処理（ここを追加） ▼▼▼
-  
-  // 1. 既存のルート線（青・赤・緑など）をすべて消す
-  if (typeof clearRouteLayers === 'function') {
-    clearRouteLayers();
-  }
-  
-  // 2. 既存のマーカー（POIピン）をすべて消す
-  if (markerLayer) {
-    markerLayer.clearLayers();
-  }
-  
-  // 3. 休憩ビーム（点線）を消す
-  if (typeof clearRestBeams === 'function') {
-    clearRestBeams();
-  } else if (restBeamLayer) {
-    restBeamLayer.clearLayers();
-  }
-
-  // 4. 手動レイヤー（前回の比較線）を初期化
-  if (!manualRouteLayerGroup) {
-    manualRouteLayerGroup = L.layerGroup().addTo(map);
-  } else {
-    manualRouteLayerGroup.clearLayers();
-  }
-  // ▲▲▲ リセット処理ここまで ▲▲▲
-
-
-  // 計算中表示
-  btn.disabled = true;
-  btn.textContent = '描画中...';
-  infoBox.textContent = 'ルート計算中...';
-  
-  const showBatch = document.getElementById('chkManBatch').checked;
-  const showSeg   = document.getElementById('chkManSeg').checked;
-  const logs = [];
+  if (infoBox) infoBox.textContent = '準備中...';
 
   try {
+    // -------------------------------------------------
+    // 1. データチェック
+    // -------------------------------------------------
+    
+    // ヘルパーがない場合のフォールバック
+    let groups = [];
+    if (typeof getGlobalRestGroups === 'function') {
+      groups = getGlobalRestGroups();
+    } else if (typeof restGroups !== 'undefined') {
+      groups = restGroups;
+    } else if (window.restGroups) {
+      groups = window.restGroups;
+    }
+
+    if (!groups || !groups.length) {
+      throw new Error('休憩トリガーデータがありません。リスト更新ボタンを押してみてください。');
+    }
+
+    // pts (地点リスト) チェック
+    if (typeof pts === 'undefined' || !Array.isArray(pts)) {
+       throw new Error('地点データ(pts)が見つかりません');
+    }
+    const start = pts.find(p => p.type === 'start') || pts[0];
+    const goal = pts.find(p => p.type === 'goal') || pts[pts.length - 1];
+    
+    if (!start || !goal) {
+      throw new Error('スタートまたはゴール地点が設定されていません');
+    }
+
+    // -------------------------------------------------
+    // 2. UIから選択されたPOIを回収
+    // -------------------------------------------------
+    const picks = [];
+    for (let i = 0; i < groups.length; i++) {
+      const sel = document.getElementById(`manualSel_${i}`);
+      if (!sel) {
+        throw new Error(`UIエラー: セレクトボックス manualSel_${i} が見つかりません。リストを更新してください。`);
+      }
+      
+      if (sel.disabled || sel.value == -1) {
+         // 候補なしの場合は null を入れるか、エラーにするか。
+         // ここでは「選択必須」としてエラーを出します。
+         // (候補なしがある場合は比較しようがないため)
+         throw new Error(`トリガー#${i+1} のPOIが選択されていません（候補なし）。`);
+      }
+      
+      const pIdx = Number(sel.value);
+      const p = groups[i].pois[pIdx];
+      if (!p) {
+         throw new Error(`データエラー: 選択されたPOI(index:${pIdx})が見つかりません。`);
+      }
+      picks.push(p);
+    }
+
+    // -------------------------------------------------
+    // 3. 地図のリセット処理（全て try 内で実行）
+    // -------------------------------------------------
+    
+    // ルート線レイヤー削除
+    if (typeof clearRouteLayers === 'function') {
+      clearRouteLayers();
+    } else if (typeof routeLayers !== 'undefined') {
+      // routeLayers変数が手動管理の場合
+      Object.values(routeLayers).forEach(l => map.removeLayer(l));
+      routeLayers = {};
+    }
+
+    // マーカー削除
+    if (typeof markerLayer !== 'undefined' && markerLayer) {
+      markerLayer.clearLayers();
+    }
+
+    // 休憩ビーム削除
+    if (typeof clearRestBeams === 'function') {
+      clearRestBeams();
+    } else if (typeof restBeamLayer !== 'undefined' && restBeamLayer) {
+      restBeamLayer.clearLayers();
+    }
+
+    // 手動レイヤー初期化
+    if (typeof manualRouteLayerGroup === 'undefined' || manualRouteLayerGroup === null) {
+      manualRouteLayerGroup = L.layerGroup().addTo(map);
+    } else {
+      manualRouteLayerGroup.clearLayers();
+    }
+
+    // -------------------------------------------------
+    // 4. API計算と描画
+    // -------------------------------------------------
+    if (btn) btn.textContent = 'ルート計算中...';
+    
+    const showBatch = document.getElementById('chkManBatch')?.checked;
+    const showSeg   = document.getElementById('chkManSeg')?.checked;
+    const logs = [];
+
     // --- A. 一括 (Batch) ---
     if (showBatch) {
       const wps = [start, ...picks, goal].map(p => ({ lat: p.lat, lon: p.lon }));
-      // 既存関数を利用
+      
+      // routeLegStatsForWaypoints が存在するかチェック
+      if (typeof routeLegStatsForWaypoints !== 'function') {
+        throw new Error('関数 routeLegStatsForWaypoints が見つかりません');
+      }
+
       const out = await routeLegStatsForWaypoints(
         wps.map(p => ({ ...p, name: 'WP' })), 
         profile
@@ -5277,43 +5320,52 @@ async function drawManualComparison() {
         const to = points[i+1];
         
         const coords = [[from.lon, from.lat], [to.lon, to.lat]];
-        const res = await dir({ coordinates: coords, elevation: true }, profile);
-        const feat = res.features[0];
         
-        if (feat) {
-          totalDist += feat.properties.summary.distance;
-          L.geoJSON(feat, {
-            style: { color: '#aa0000', weight: 4, dashArray: '10, 10', opacity: 1.0 }
-          }).bindTooltip(`区間 ${i+1}`).addTo(manualRouteLayerGroup);
-          okCount++;
+        // dir が存在するかチェック
+        if (typeof dir !== 'function') throw new Error('関数 dir が見つかりません');
+
+        const res = await dir({ coordinates: coords, elevation: true }, profile);
+        
+        if (!res || !res.features || !res.features[0]) {
+           throw new Error(`区間${i+1}のルート取得に失敗しました`);
         }
+
+        const feat = res.features[0];
+        totalDist += feat.properties.summary.distance;
+        
+        L.geoJSON(feat, {
+          style: { color: '#aa0000', weight: 4, dashArray: '10, 10', opacity: 1.0 }
+        }).bindTooltip(`区間 ${i+1}`).addTo(manualRouteLayerGroup);
+        okCount++;
       }
       logs.push(`[積上] 距離: ${(totalDist/1000).toFixed(2)} km (区間数:${okCount})`);
     }
 
-    // マーカー表示（選択したPOIとStart/Goalだけピンを立てる）
-    // setComboMarkers は内部で markerLayer をクリアしてからセットする仕様なので安心
-    setComboMarkers(start, picks, goal);
+    // マーカー再配置
+    if (typeof setComboMarkers === 'function') {
+      setComboMarkers(start, picks, goal);
+    }
 
-    infoBox.textContent = logs.join('\n');
+    if (infoBox) infoBox.textContent = logs.join('\n');
     
-    // 描画範囲にズーム
-    // manualRouteLayerGroupの範囲を取得するのは少し面倒なので、マーカーレイヤーに合わせる
-    if (markerLayer && markerLayer.getLayers().length > 0) {
-       // 少し余白を持たせてズーム
+    // ズーム調整
+    if (typeof map !== 'undefined' && typeof markerLayer !== 'undefined') {
        const group = new L.featureGroup([manualRouteLayerGroup, markerLayer]);
-       map.fitBounds(group.getBounds().pad(0.1));
+       const b = group.getBounds();
+       if (b.isValid()) map.fitBounds(b.pad(0.1));
     }
 
   } catch (e) {
     console.error(e);
-    alert('描画エラー: ' + e.message);
-    infoBox.textContent = 'エラー発生';
+    alert('エラーが発生しました:\n' + e.message);
+    if (infoBox) infoBox.textContent = 'エラー: ' + e.message;
   } finally {
-    btn.disabled = false;
-    btn.textContent = '選択したPOIで比較描画';
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '選択したPOIで比較描画';
+    }
   }
-}
+};
 </script>
 </body>
 </html>
