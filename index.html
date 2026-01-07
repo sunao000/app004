@@ -1170,18 +1170,18 @@ async function drawRoutes(){
 
   try{
     const tkORS = tStart('ORS: 最短/最速');
-const shortest = await dir({...base, preference:'shortest'}, profile);
-const fastest  = await dir({...base, preference:'fastest'},  profile);
-tEnd(tkORS, `pts=${pts.length}`);
+    const shortest = await dir({...base, preference:'shortest'}, profile);
+    const fastest  = await dir({...base, preference:'fastest'},  profile);
+    tEnd(tkORS, `pts=${pts.length}`);
 
 
     let slope = shortest.features[0];
     let arterial = fastest.features[0];
     if(coords.length===2){
       const tkAlt = tStart('ORS: 代替経路');
-const alt = await dir({...base, preference:'shortest',
-  alternative_routes:{target_count:3,share_factor:0.6,weight_factor:1.4}}, profile);
-tEnd(tkAlt, `alts=${(alt.features||[]).length}`);
+      const alt = await dir({...base, preference:'shortest',
+        alternative_routes:{target_count:3,share_factor:0.6,weight_factor:1.4}}, profile);
+      tEnd(tkAlt, `alts=${(alt.features||[]).length}`);
 
       const feats = alt.features || [];
       if(feats.length){
@@ -1217,8 +1217,8 @@ tEnd(tkAlt, `alts=${(alt.features||[]).length}`);
     const flat = 18; // 平坦係数
     const baseFeature = routeData.arterial || routeData.fastest;
     const tkRest = tStart('休憩トリガ生成');
-const rests = await makeRestPoints(baseFeature, mass, flat);
-tEnd(tkRest, `hits=${rests.length}`);
+    const rests = await makeRestPoints(baseFeature, mass, flat);
+    tEnd(tkRest, `hits=${rests.length}`);
 
 
     restGroups = (rests || []).map(r => ({ rest: r, pois: [] }));
@@ -1227,8 +1227,8 @@ tEnd(tkRest, `hits=${rests.length}`);
 
     if (rests.length) {
       // リストに挿入（ゴール直前）
-     rests.forEach(r => {
-       pts.splice(pts.length-1, 0,
+      rests.forEach(r => {
+        pts.splice(pts.length-1, 0,
                   { name:'休憩', lat:r.lat, lon:r.lon, type:'via', isRest:true });
         // ▼ r が有効なスコープ内で push
         restList.push({distance:(r.routeD/1000).toFixed(2), lat:r.lat, lon:r.lon});
@@ -1248,55 +1248,61 @@ tEnd(tkRest, `hits=${rests.length}`);
       }
 
       // POI検索（半径固定・近い順に n 件）
-if ($('poiToggle').checked) {
-  const baseRadius = Number($('poiRadius').value) || 500;
-  const limit = Math.max(1, Number($('poiLimit').value) || 5);
-  // ★ ここで今回の休憩場所検索開始時点のカウントを記録
-  const overpassBefore = OVERPASS_CALL_TOTAL;
+      if ($('poiToggle').checked) {
+        const baseRadius = Number($('poiRadius').value) || 500;
+        const limit = Math.max(1, Number($('poiLimit').value) || 5);
+        // ★ ここで今回の休憩場所検索開始時点のカウントを記録
+        const overpassBefore = OVERPASS_CALL_TOTAL;
 
-  for (let idx = 0; idx < rests.length; idx++) {
-    const r = rests[idx];
-    try {
-      const tkPOI = tStart(`POI#${idx+1}`);
-const pois = await fetchPoisAround(r.lat, r.lon, baseRadius, limit);
-tEnd(tkPOI, `found=${pois.length}`);
+        for (let idx = 0; idx < rests.length; idx++) {
+          const r = rests[idx];
+          
+          // ★★★ 追加対策：前の検索から必ず3秒空ける（Overpass負荷軽減） ★★★
+          if (idx > 0) {
+             await new Promise(res => setTimeout(res, 3000));
+          }
 
-      logRest(`[POI] ${(r.routeD / 1000).toFixed(2)} km: 半径${baseRadius}m → ${pois.length}件（近い順）`);
+          try {
+            const tkPOI = tStart(`POI#${idx+1}`);
+            const pois = await fetchPoisAround(r.lat, r.lon, baseRadius, limit);
+            tEnd(tkPOI, `found=${pois.length}`);
 
-      // ▼ 追加：この休憩トリガーのPOIを保存
-      if (restGroups[idx]) {
-        restGroups[idx].pois = pois.map(p => ({ ...p, triggerIndex: idx }));
+            logRest(`[POI] ${(r.routeD / 1000).toFixed(2)} km: 半径${baseRadius}m → ${pois.length}件（近い順）`);
+
+            // ▼ 追加：この休憩トリガーのPOIを保存
+            if (restGroups[idx]) {
+              restGroups[idx].pois = pois.map(p => ({ ...p, triggerIndex: idx }));
+            }
+              
+            // 既存：マップに描画
+            pois.forEach(po => {
+              L.marker([po.lat, po.lon], {
+                icon: new L.Icon({
+                  iconUrl: 'https://maps.gstatic.com/mapfiles/ms2/micons/purple.png',
+                  iconSize: [24, 24],
+                  iconAnchor: [12, 24]
+                })
+              }).bindTooltip(`${po.name}${typeof po.distFromTriggerM === 'number' ? ` (${formatDist(po.distFromTriggerM)})` : ''}`).addTo(markerLayer);
+            });
+          } catch (e) {
+            logRest(`[POI] ${(r.routeD / 1000).toFixed(2)} km: 取得失敗`);
+          }
+        }
+
+        //パネルへ反映
+        ensureProjections();
+        updateRestPoiPanel();
+        // ★ ここで今回使った回数と累計を「最後の行」として出す
+        const usedThisTime = OVERPASS_CALL_TOTAL - overpassBefore;
+        logRest(`--- Overpass API 呼び出し: 今回 ${usedThisTime} 回 / 累計 ${OVERPASS_CALL_TOTAL} 回 ---`);
       }
-        
-      // 既存：マップに描画
-      pois.forEach(po => {
-        L.marker([po.lat, po.lon], {
-          icon: new L.Icon({
-            iconUrl: 'https://maps.gstatic.com/mapfiles/ms2/micons/purple.png',
-            iconSize: [24, 24],
-            iconAnchor: [12, 24]
-          })
-        }).bindTooltip(`${po.name}${typeof po.distFromTriggerM === 'number' ? ` (${formatDist(po.distFromTriggerM)})` : ''}`).addTo(markerLayer);
-      });
-    } catch (e) {
-      logRest(`[POI] ${(r.routeD / 1000).toFixed(2)} km: 取得失敗`);
-    }
-  }
-
-  //パネルへ反映
-  ensureProjections();
-  updateRestPoiPanel();
-  // ★ ここで今回使った回数と累計を「最後の行」として出す
-  const usedThisTime = OVERPASS_CALL_TOTAL - overpassBefore;
-  logRest(`--- Overpass API 呼び出し: 今回 ${usedThisTime} 回 / 累計 ${OVERPASS_CALL_TOTAL} 回 ---`);
-}
 
     }
 
-// デフォルト表示は幹線優先（なければ最速）
-const prefer = routeData.arterial ? 'arterial' : 'fastest';
-showSingleRoute(prefer, true);
-setActiveButton(prefer === 'arterial' ? $('btnShowArterial') : $('btnShowFastest'));
+    // デフォルト表示は幹線優先（なければ最速）
+    const prefer = routeData.arterial ? 'arterial' : 'fastest';
+    showSingleRoute(prefer, true);
+    setActiveButton(prefer === 'arterial' ? $('btnShowArterial') : $('btnShowFastest'));
 
   }catch(e){
     console.error(e);
@@ -1562,55 +1568,88 @@ function summaryStats(arr){
   return {mean:m, var:v, std:Math.sqrt(v)};
 }
 
-/* ===== Overpass（保守的実装） ===== */
+/* ====== Overpass API 呼び出し（強化版） ====== */
+
+// 待機用ヘルパー（これが必要です）
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function overpassQuery(query) {
   const endpoints = [
     'https://overpass-api.de/api/interpreter',
-    //'https://overpass.kumi.systems/api/interpreter'
+    // バックアップが必要ならコメントアウトを外す
+    // 'https://overpass.kumi.systems/api/interpreter' 
   ];
-  let lastStatus = 0, lastText = '';
+  
+  let lastError = null;
 
   for (const ep of endpoints) {
     try {
-      // ★ ここで呼び出し回数をカウント
-      API_USED.overpassTotal++;
-      OVERPASS_CALL_TOTAL++;
+      // ★ 呼び出し前に必ず1秒待つ（グローバルな負荷軽減）
+      await sleep(1000); 
+
+      // カウンタ更新
+      if (typeof API_USED !== 'undefined') API_USED.overpassTotal++;
+      if (typeof OVERPASS_CALL_TOTAL !== 'undefined') OVERPASS_CALL_TOTAL++;
 
       const r = await fetch(ep, {
         method: 'POST',
         headers: {
-          'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8',
-          'Accept': 'application/json,text/plain,*/*'
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
         },
         body: new URLSearchParams({ data: query }).toString()
       });
-      lastStatus = r.status;
-      if (r.ok) return r.json();
-      lastText = await r.text();
-      if (r.status === 400) {
-        console.warn('[Overpass] 400 detected.\n---QUERY START---\n' + query + '\n---QUERY END---\n' +
-                     '---RESPONSE START---\n' + lastText + '\n---RESPONSE END---');
+
+      if (r.ok) return await r.json();
+
+      // エラー時の処理
+      const txt = await r.text().catch(() => "");
+      
+      // 429 (Too Many Requests) の場合 -> サーバーから「待ちなさい」と言われている
+      if (r.status === 429) {
+        console.warn(`[Overpass] 429 Detected on ${ep}. Waiting 10s...`);
+        await sleep(10000); // 10秒待機
+        throw new Error("RateLimit"); // リトライさせるためにエラーを投げる
       }
+
+      // 504 (Timeout) の場合 -> クエリが重すぎる
+      if (r.status === 504) {
+        console.warn(`[Overpass] 504 Timeout on ${ep}. Query too heavy.`);
+        lastError = new Error(`Timeout 504: ${txt}`);
+        continue; // 別のエンドポイントならいけるかも？（可能性は低いが）
+      }
+
+      lastError = new Error(`Status ${r.status}: ${txt}`);
+
     } catch (e) {
-      lastText = e.message || String(e);
+      if (e.message === "RateLimit") throw e; // Retry関数でキャッチさせる
+      console.warn(`[Overpass] Error on ${ep}:`, e);
+      lastError = e;
     }
   }
-  throw new Error(`[Overpass] all attempts failed. Last status=${lastStatus}. Snippet=${(lastText||'').slice(0,1200)}`);
+  throw lastError || new Error('[Overpass] All endpoints failed.');
 }
+
 async function overpassRetry(query) {
-  let delay = 800;
-  for (let i=0;i<5;i++) {
+  // リトライ回数を減らし、間隔を広げる
+  let delay = 3000; // 初回3秒待機
+
+  for (let i = 0; i < 3; i++) { // 最大3回トライ
     try {
       return await overpassQuery(query);
     } catch (e) {
-      if (String(e).includes('status=400')) throw e; // 構文系は打ち切り
-      await new Promise(res=>setTimeout(res, delay));
-      delay = Math.min(6000, Math.round(delay*1.8));
+      // 構文エラーなら即死
+      if (String(e).includes('status=400')) throw e;
+      
+      console.warn(`[Overpass] Retry ${i+1}/3 after ${delay}ms...`);
+      await sleep(delay);
+      
+      // 待機時間を倍々に増やす (3s -> 6s -> 12s)
+      delay *= 2;
     }
   }
+  // 最後にもう一度だけトライしてダメなら諦める
   return await overpassQuery(query);
 }
-
 /* ===== POI取得（改良版）：カテゴリ自動拡張＋半径段階拡大＋距離ソート ===== */
 async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
   // --- 入力/前処理 ---
