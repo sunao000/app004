@@ -1073,7 +1073,7 @@ async function nomSearch(q){
 
 // ★変更点1: 待機時間を 1100ms -> 2500ms (2.5秒) に変更
 // 無料枠は「1分間に40回」なので、1回あたり最低1.5秒は必要。余裕を持って2.5秒にします。
-const ORS_INTERVAL = 1750; 
+const ORS_INTERVAL = 2500; 
 
 async function dir(body, profile) {
   // 現在時刻と前回の差分を計算
@@ -5166,14 +5166,16 @@ function updateManualRouteUI() {
   console.log('[ManualRoute] UI updated successfully');
 }
 
-// 2. 比較描画の実行関数
+// 2. 比較描画の実行関数（地図リセット機能付き）
 async function drawManualComparison() {
+  console.log('[ManualRoute] ボタンが押されました'); // ★反応チェック用ログ
+
   const infoBox = document.getElementById('manualRouteInfo');
   const btn = document.getElementById('btnDrawManualRoute');
   const profile = document.getElementById('profileSelect')?.value || 'cycling-road'; 
 
+  // データ取得
   const groups = getGlobalRestGroups();
-
   if (!groups || !groups.length) {
     alert('休憩トリガーデータがありません。リスト更新ボタンを押してみてください。');
     return;
@@ -5194,24 +5196,51 @@ async function drawManualComparison() {
       alert('UIが壊れています。「更新」ボタンを押してリストを再生成してください。');
       return;
     }
+    // 候補なし(-1)の場合は null を入れておく（スキップ扱い）
+    // ※もし「必ず選ばないとダメ」ならここでalertしてreturn
     if (sel.disabled || sel.value == -1) {
-      alert(`トリガー#${i+1} のPOIが選択されていません（候補なし）。比較できません。`);
-      return;
+       // 今回は「候補なし」のトリガーはスキップしてつなぐ仕様にします
+       // picks.push(null); 
+       // スキップする場合はpushしない
+    } else {
+      const pIdx = Number(sel.value);
+      const p = groups[i].pois[pIdx];
+      picks.push(p);
     }
-    const pIdx = Number(sel.value);
-    const p = groups[i].pois[pIdx];
-    picks.push(p);
   }
 
-  // レイヤー初期化
+  // ▼▼▼ 地図のリセット処理（ここを追加） ▼▼▼
+  
+  // 1. 既存のルート線（青・赤・緑など）をすべて消す
+  if (typeof clearRouteLayers === 'function') {
+    clearRouteLayers();
+  }
+  
+  // 2. 既存のマーカー（POIピン）をすべて消す
+  if (markerLayer) {
+    markerLayer.clearLayers();
+  }
+  
+  // 3. 休憩ビーム（点線）を消す
+  if (typeof clearRestBeams === 'function') {
+    clearRestBeams();
+  } else if (restBeamLayer) {
+    restBeamLayer.clearLayers();
+  }
+
+  // 4. 手動レイヤー（前回の比較線）を初期化
   if (!manualRouteLayerGroup) {
     manualRouteLayerGroup = L.layerGroup().addTo(map);
   } else {
     manualRouteLayerGroup.clearLayers();
   }
+  // ▲▲▲ リセット処理ここまで ▲▲▲
 
+
+  // 計算中表示
   btn.disabled = true;
-  infoBox.textContent = '計算中...';
+  btn.textContent = '描画中...';
+  infoBox.textContent = 'ルート計算中...';
   
   const showBatch = document.getElementById('chkManBatch').checked;
   const showSeg   = document.getElementById('chkManSeg').checked;
@@ -5248,7 +5277,6 @@ async function drawManualComparison() {
         const to = points[i+1];
         
         const coords = [[from.lon, from.lat], [to.lon, to.lat]];
-        // dir関数を利用（既存）
         const res = await dir({ coordinates: coords, elevation: true }, profile);
         const feat = res.features[0];
         
@@ -5263,8 +5291,19 @@ async function drawManualComparison() {
       logs.push(`[積上] 距離: ${(totalDist/1000).toFixed(2)} km (区間数:${okCount})`);
     }
 
+    // マーカー表示（選択したPOIとStart/Goalだけピンを立てる）
+    // setComboMarkers は内部で markerLayer をクリアしてからセットする仕様なので安心
     setComboMarkers(start, picks, goal);
+
     infoBox.textContent = logs.join('\n');
+    
+    // 描画範囲にズーム
+    // manualRouteLayerGroupの範囲を取得するのは少し面倒なので、マーカーレイヤーに合わせる
+    if (markerLayer && markerLayer.getLayers().length > 0) {
+       // 少し余白を持たせてズーム
+       const group = new L.featureGroup([manualRouteLayerGroup, markerLayer]);
+       map.fitBounds(group.getBounds().pad(0.1));
+    }
 
   } catch (e) {
     console.error(e);
@@ -5272,11 +5311,9 @@ async function drawManualComparison() {
     infoBox.textContent = 'エラー発生';
   } finally {
     btn.disabled = false;
+    btn.textContent = '選択したPOIで比較描画';
   }
 }
 </script>
 </body>
 </html>
-
-
-
