@@ -5048,19 +5048,26 @@ function renderViterbiEdgesPanel(show){
    ============================================== */
 let manualRouteLayerGroup = null; // レイヤー管理用
 
+/* ==============================================
+   手動ルート比較機能（一括 vs 積み上げ）修正版
+   ============================================== */
+let manualRouteLayerGroup = null; // レイヤー管理用
+
 // 1. セレクトボックスのUIを更新する関数
 function updateManualRouteUI() {
   const container = document.getElementById('manualRouteSelectors');
   if (!container) return;
   container.innerHTML = '';
 
-  if (!window.restGroups || !window.restGroups.length) {
+  // ★修正: window.restGroups ではなく restGroups を使う
+  if (typeof restGroups === 'undefined' || !restGroups || !restGroups.length) {
     container.textContent = '休憩トリガーがありません。先に「休憩場所検索」を行ってください。';
     return;
   }
 
   // トリガーごとにセレクトボックス作成
-  window.restGroups.forEach((g, idx) => {
+  // ★修正: window.restGroups ではなく restGroups を使う
+  restGroups.forEach((g, idx) => {
     const row = document.createElement('div');
     row.style.display = 'flex';
     row.style.alignItems = 'center';
@@ -5086,7 +5093,7 @@ function updateManualRouteUI() {
       select.disabled = true;
     } else {
       pois.forEach((p, pIdx) => {
-        // 名前補完 (ensurePoiName相当の処理済みを想定)
+        // 名前補完
         const name = p.name || `POI${idx}_${pIdx}`;
         const opt = document.createElement('option');
         opt.text = name;
@@ -5107,9 +5114,11 @@ function updateManualRouteUI() {
 async function drawManualComparison() {
   const infoBox = document.getElementById('manualRouteInfo');
   const btn = document.getElementById('btnDrawManualRoute');
-  const profile = document.getElementById('profileSelect')?.value || 'cycling-road'; // プロファイル取得(なければ固定)
+  // プロファイル取得(なければ固定)
+  const profile = document.getElementById('profileSelect')?.value || 'cycling-road'; 
 
-  if (!window.restGroups || !window.restGroups.length) {
+  // ★修正: window.restGroups ではなく restGroups を使う
+  if (typeof restGroups === 'undefined' || !restGroups || !restGroups.length) {
     alert('休憩トリガーがありません');
     return;
   }
@@ -5123,16 +5132,16 @@ async function drawManualComparison() {
 
   // UIから選択されたPOIを回収
   const picks = [];
-  for (let i = 0; i < window.restGroups.length; i++) {
+  // ★修正: window.restGroups ではなく restGroups を使う
+  for (let i = 0; i < restGroups.length; i++) {
     const sel = document.getElementById(`manualSel_${i}`);
     if (!sel || sel.disabled || sel.value == -1) {
-      // 候補なしの場合は「スキップ」扱いにせず、経路がつながらないのでエラーにするか、
-      // あるいは強引に null を入れて後で弾くか。ここでは「選択不可＝経路生成不可」とみなす
       alert(`トリガー#${i+1} のPOIが選択されていません（候補なし）。比較できません。`);
       return;
     }
     const pIdx = Number(sel.value);
-    const p = window.restGroups[i].pois[pIdx];
+    // ★修正: restGroups を使う
+    const p = restGroups[i].pois[pIdx];
     picks.push(p);
   }
 
@@ -5154,11 +5163,9 @@ async function drawManualComparison() {
     // --- A. 一括 (Batch) ---
     if (showBatch) {
       const wps = [start, ...picks, goal].map(p => ({ lat: p.lat, lon: p.lon }));
-      // 既存のAPIヘルパーを利用 (routeLegStatsForWaypoints)
-      // ※ヘルパーはstatsも返すが、ここではfeatureを使う
       const out = await routeLegStatsForWaypoints(
         wps.map(p => ({ ...p, name: 'WP' })), 
-        'cycling-road' // プロファイル固定(適宜変更可)
+        'cycling-road'
       );
       
       if (out && out.feature) {
@@ -5183,8 +5190,6 @@ async function drawManualComparison() {
         const to = points[i+1];
         
         // 区間ごとにAPIコール
-        // (calcLegCostWithApiCached があるならそれを使うと早いが、ここでは描画用geometryが必要)
-        // geometryが欲しいので orsDirections (または dir) を呼ぶ
         const coords = [[from.lon, from.lat], [to.lon, to.lat]];
         const res = await dir({ coordinates: coords, elevation: true }, 'cycling-road');
         const feat = res.features[0];
@@ -5214,13 +5219,6 @@ async function drawManualComparison() {
     btn.disabled = false;
   }
 }
-
-// 初期化時にボタンイベントを登録
-window.addEventListener('DOMContentLoaded', () => {
-  const btn = document.getElementById('btnDrawManualRoute');
-  if (btn) btn.onclick = drawManualComparison;
-});
-
 </script>
 </body>
 </html>
