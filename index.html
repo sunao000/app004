@@ -228,6 +228,7 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 <label><input type="checkbox" id="dbg_D" checked> 対策D</label>
 <label><input type="checkbox" id="dbg_E" checked> 対策E</label>
 <label><input type="checkbox" id="dbg_F" checked> 対策F</label>
+<label><input type="checkbox" id="dbg_F" checked> 対策G</label>
 
 <label style="display:inline-flex;align-items:center;gap:6px">
   A/B beamWidth
@@ -3479,6 +3480,25 @@ window.__viterbiAllEdgeRows = Array.from(window.__viterbiEdgeAgg.values()).map(x
       }
     }
 
+    /* ---------- 対策G: SG排除 + ビーム再ランキング ---------- */
+  if (isAlgoEnabled('dbg_G')) { // ※テスト用に true にしておくと強制実行されます
+    const t0 = performance.now();
+    try {
+      // groupsC があればそれを使う（端処理用グループ）、なければ vitGroups
+      const targetGroups = (typeof groupsC !== 'undefined' && groupsC.length) ? groupsC : vitGroups;
+
+      const gList = await solveMeasureG(start, goal, targetGroups, profile, { 
+        beamWidth: 5  // ビーム幅（5〜10推奨）
+      });
+      
+      const t1 = performance.now();
+      pushAlgoResultsForCsv('G', 'SG排除+再ランク', gList, t1 - t0, -1, 0);
+
+    } catch (e) {
+      console.error('Algo G fail:', e);
+    }
+  }
+
     // ----------------------------------------------------------
     // 全体時間
     // ----------------------------------------------------------
@@ -4894,6 +4914,109 @@ function applyAutoNamesToAllPois(){
       ensurePoiName(p, ti, pi);
     }
   }
+}
+
+/* ==========================================================
+   【対策G】SG排除ビームサーチ (Start/Goal区間無視 + 精密評価)
+   ========================================================== */
+async function solveMeasureG(start, goal, groups, profile, opt = {}) {
+  const T = Array.isArray(groups) ? groups.length : 0;
+  if (!T) return [];
+
+  // ビーム幅（デフォルト5：上位5件を残しながら進む）
+  const beamWidth = Math.max(1, Number(opt.beamWidth) || 5);
+
+  // キャッシュ（API節約）
+  const cache = new Map();
+  
+  // 内部ヘルパー：ルート統計を取得し「SG排除スコア」を計算
+  const getStatsAndScore = async (wps) => {
+    // 座標キーでキャッシュ確認
+    const key = wps.map(p => `${Number(p.lat).toFixed(5)},${Number(p.lon).toFixed(5)}`).join('|');
+    if (cache.has(key)) return cache.get(key);
+
+    const res = await routeLegStatsForWaypoints(wps, profile);
+    let score = Infinity;
+
+    // SG排除スコア計算：エネルギー配列の「最初」と「最後」をカットして評価
+    if (res?.stats?.energy?.length) {
+      const eArr = res.stats.energy;
+      if (eArr.length > 2) {
+        // 中間区間のみ抽出
+        const core = eArr.slice(1, eArr.length - 1);
+        score = Physics.costMSE(Physics.stdDev(core), 0);
+      } else {
+        // 区間不足なら全体評価
+        score = Physics.costMSE(Physics.stdDev(eArr), 0);
+      }
+    }
+    
+    const val = { feature: res.feature, stats: res.stats, score };
+    cache.set(key, val);
+    return val;
+  };
+
+  // --- ビーム初期化 ---
+  // { score, picks: [POIリスト] }
+  let beam = [{ score: 0, picks: [] }];
+
+  // Step 0: Start -> Group 0 (コスト0扱いで展開)
+  let nextBeam = [];
+  for (let j = 0; j < groups[0].length; j++) {
+    nextBeam.push({ score: 0, picks: [groups[0][j]] });
+  }
+  beam = nextBeam;
+
+  // Step 1..T-1 (中間区間)
+  for (let t = 1; t < T; t++) {
+    nextBeam = [];
+    
+    // 現在のビーム × 次の候補
+    for (const parent of beam) {
+      for (let j = 0; j < groups[t].length; j++) {
+        const currP = groups[t][j];
+        const newPicks = [...parent.picks, currP];
+        
+        try {
+           // ここまでのルート（Start + Picks）で評価
+           const wps = [start, ...newPicks];
+           const res = await getStatsAndScore(wps);
+           
+           nextBeam.push({
+             score: res.score, // SG排除スコア
+             picks: newPicks,
+             feature: res.feature,
+             stats: res.stats
+           });
+        } catch (e) { /* 無視 */ }
+      }
+    }
+    // 上位N件に絞る
+    nextBeam.sort((a, b) => a.score - b.score);
+    beam = nextBeam.slice(0, beamWidth);
+  }
+
+  // Last Step: Group Last -> Goal
+  // ※ゴール区間も無視するが、描画用にルートは引く
+  const finalResults = [];
+  for (const cand of beam) {
+    const fullPicks = cand.picks;
+    const wps = [start, ...fullPicks, goal];
+    try {
+      const out = await getStatsAndScore(wps);
+      finalResults.push({
+        score: out.score,     // SG排除済みの最終スコア
+        rawScore: out.score,  // (比較用)
+        feature: out.feature,
+        stats: out.stats,
+        picks: fullPicks,
+        picksByTrigger: fullPicks
+      });
+    } catch(e) { /* 無視 */ }
+  }
+
+  finalResults.sort((a, b) => a.score - b.score);
+  return finalResults;
 }
 
 function formatNum(x, digits=3){
