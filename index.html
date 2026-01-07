@@ -126,6 +126,8 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
     <div style="padding:8px; font-size:0.9rem;">
       <p style="margin:0 0 8px 0;color:#666">各トリガーで経由するPOIを選んで描画します。</p>
       
+      <button onclick="updateManualRouteUI()" style="margin-bottom:8px;font-size:12px;">🔄 リストが空の場合はここを押して更新</button>
+
       <div id="manualRouteSelectors" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;">
         (休憩場所検索を実行してください)
       </div>
@@ -5092,30 +5094,36 @@ function renderViterbiEdgesPanel(show){
 }
 
 /* ==============================================
-   手動ルート比較機能（一括 vs 積み上げ）
+   手動ルート比較機能（強力版）
    ============================================== */
-let manualRouteLayerGroup = null; // レイヤー管理用
+let manualRouteLayerGroup = null;
 
-/* ==============================================
-   手動ルート比較機能（一括 vs 積み上げ）修正版
-   ============================================== */
-let manualRouteLayerGroup = null; // レイヤー管理用
+// データを安全に取得するヘルパー
+function getGlobalRestGroups() {
+  // window.restGroups か、グローバル変数の restGroups を探す
+  if (typeof restGroups !== 'undefined' && Array.isArray(restGroups)) return restGroups;
+  if (window.restGroups && Array.isArray(window.restGroups)) return window.restGroups;
+  return [];
+}
 
 // 1. セレクトボックスのUIを更新する関数
 function updateManualRouteUI() {
+  console.log('[ManualRoute] updateManualRouteUI called');
+  
   const container = document.getElementById('manualRouteSelectors');
   if (!container) return;
   container.innerHTML = '';
 
-  // ★修正: window.restGroups ではなく restGroups を使う
-  if (typeof restGroups === 'undefined' || !restGroups || !restGroups.length) {
-    container.textContent = '休憩トリガーがありません。先に「休憩場所検索」を行ってください。';
+  const groups = getGlobalRestGroups();
+  console.log('[ManualRoute] restGroups count:', groups.length);
+
+  if (!groups || !groups.length) {
+    container.innerHTML = '<span style="color:red;">データが見つかりません。<br>1. 「休憩場所検索」を実行してください。<br>2. それでも出ない場合はこの上の「更新」ボタンを押してください。</span>';
     return;
   }
 
   // トリガーごとにセレクトボックス作成
-  // ★修正: window.restGroups ではなく restGroups を使う
-  restGroups.forEach((g, idx) => {
+  groups.forEach((g, idx) => {
     const row = document.createElement('div');
     row.style.display = 'flex';
     row.style.alignItems = 'center';
@@ -5141,14 +5149,12 @@ function updateManualRouteUI() {
       select.disabled = true;
     } else {
       pois.forEach((p, pIdx) => {
-        // 名前補完
         const name = p.name || `POI${idx}_${pIdx}`;
         const opt = document.createElement('option');
         opt.text = name;
-        opt.value = pIdx; // インデックスを値にする
+        opt.value = pIdx;
         select.add(opt);
       });
-      // デフォルトで0番目を選択
       select.selectedIndex = 0;
     }
 
@@ -5156,18 +5162,20 @@ function updateManualRouteUI() {
     row.appendChild(select);
     container.appendChild(row);
   });
+  
+  console.log('[ManualRoute] UI updated successfully');
 }
 
 // 2. 比較描画の実行関数
 async function drawManualComparison() {
   const infoBox = document.getElementById('manualRouteInfo');
   const btn = document.getElementById('btnDrawManualRoute');
-  // プロファイル取得(なければ固定)
   const profile = document.getElementById('profileSelect')?.value || 'cycling-road'; 
 
-  // ★修正: window.restGroups ではなく restGroups を使う
-  if (typeof restGroups === 'undefined' || !restGroups || !restGroups.length) {
-    alert('休憩トリガーがありません');
+  const groups = getGlobalRestGroups();
+
+  if (!groups || !groups.length) {
+    alert('休憩トリガーデータがありません。リスト更新ボタンを押してみてください。');
     return;
   }
 
@@ -5180,16 +5188,18 @@ async function drawManualComparison() {
 
   // UIから選択されたPOIを回収
   const picks = [];
-  // ★修正: window.restGroups ではなく restGroups を使う
-  for (let i = 0; i < restGroups.length; i++) {
+  for (let i = 0; i < groups.length; i++) {
     const sel = document.getElementById(`manualSel_${i}`);
-    if (!sel || sel.disabled || sel.value == -1) {
+    if (!sel) {
+      alert('UIが壊れています。「更新」ボタンを押してリストを再生成してください。');
+      return;
+    }
+    if (sel.disabled || sel.value == -1) {
       alert(`トリガー#${i+1} のPOIが選択されていません（候補なし）。比較できません。`);
       return;
     }
     const pIdx = Number(sel.value);
-    // ★修正: restGroups を使う
-    const p = restGroups[i].pois[pIdx];
+    const p = groups[i].pois[pIdx];
     picks.push(p);
   }
 
@@ -5211,13 +5221,13 @@ async function drawManualComparison() {
     // --- A. 一括 (Batch) ---
     if (showBatch) {
       const wps = [start, ...picks, goal].map(p => ({ lat: p.lat, lon: p.lon }));
+      // 既存関数を利用
       const out = await routeLegStatsForWaypoints(
         wps.map(p => ({ ...p, name: 'WP' })), 
-        'cycling-road'
+        profile
       );
       
       if (out && out.feature) {
-        // 青い太線
         L.geoJSON(out.feature, {
           style: { color: '#0055aa', weight: 8, opacity: 0.6 }
         }).bindTooltip("一括ルート").addTo(manualRouteLayerGroup);
@@ -5237,14 +5247,13 @@ async function drawManualComparison() {
         const from = points[i];
         const to = points[i+1];
         
-        // 区間ごとにAPIコール
         const coords = [[from.lon, from.lat], [to.lon, to.lat]];
-        const res = await dir({ coordinates: coords, elevation: true }, 'cycling-road');
+        // dir関数を利用（既存）
+        const res = await dir({ coordinates: coords, elevation: true }, profile);
         const feat = res.features[0];
         
         if (feat) {
           totalDist += feat.properties.summary.distance;
-          // 赤い細線（破線）
           L.geoJSON(feat, {
             style: { color: '#aa0000', weight: 4, dashArray: '10, 10', opacity: 1.0 }
           }).bindTooltip(`区間 ${i+1}`).addTo(manualRouteLayerGroup);
@@ -5254,9 +5263,7 @@ async function drawManualComparison() {
       logs.push(`[積上] 距離: ${(totalDist/1000).toFixed(2)} km (区間数:${okCount})`);
     }
 
-    // マーカー表示（選択したPOIだけピンを立てる）
     setComboMarkers(start, picks, goal);
-
     infoBox.textContent = logs.join('\n');
 
   } catch (e) {
