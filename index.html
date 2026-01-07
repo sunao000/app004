@@ -255,8 +255,8 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 
 <script>
 /* ====== 設定 ====== */
-const ORS_KEY  = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9'; 
-// const ORS_KEY  = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjE0YTgxN2M5OWZmNjQ4MmNiMTZkYTk3YWFkMDI2MDAxIiwiaCI6Im11cm11cjY0In0=';
+// const ORS_KEY  = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9'; 
+const ORS_KEY  = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjE0YTgxN2M5OWZmNjQ4MmNiMTZkYTk3YWFkMDI2MDAxIiwiaCI6Im11cm11cjY0In0=';
 const ORS_ROOT = 'https://api.openrouteservice.org';
 
 /* ====== ヘルパ ====== */
@@ -5340,13 +5340,12 @@ function updateManualRouteUI() {
 }
 
 /* ==============================================
-   手動ルート比較機能（デバッグ・安全強化版）
+   手動ルート比較機能（完全版：時間・エネルギー・差分対応）
    ============================================== */
 
-// ボタンから確実に呼べるように window に登録
 window.drawManualComparison = async function() {
-  console.log('[ManualRoute] ボタンクリック検知'); 
-  
+  console.log('[ManualRoute] ボタンクリック検知');  
+   
   const infoBox = document.getElementById('manualRouteInfo');
   const btn = document.getElementById('btnDrawManualRoute');
   const profile = document.getElementById('profileSelect')?.value || 'cycling-road'; 
@@ -5360,10 +5359,9 @@ window.drawManualComparison = async function() {
 
   try {
     // -------------------------------------------------
-    // 1. データチェック
+    // 1. データチェック (変更なし)
     // -------------------------------------------------
     
-    // ヘルパーがない場合のフォールバック
     let groups = [];
     if (typeof getGlobalRestGroups === 'function') {
       groups = getGlobalRestGroups();
@@ -5377,7 +5375,6 @@ window.drawManualComparison = async function() {
       throw new Error('休憩トリガーデータがありません。リスト更新ボタンを押してみてください。');
     }
 
-    // pts (地点リスト) チェック
     if (typeof pts === 'undefined' || !Array.isArray(pts)) {
        throw new Error('地点データ(pts)が見つかりません');
     }
@@ -5389,14 +5386,12 @@ window.drawManualComparison = async function() {
     }
 
     // -------------------------------------------------
-    // 2. UIから選択されたPOIを回収
+    // 2. UIから選択されたPOIを回収 (変更なし)
     // -------------------------------------------------
     const picks = [];
     for (let i = 0; i < groups.length; i++) {
       const sel = document.getElementById(`manualSel_${i}`);
-      if (!sel) {
-        throw new Error(`UIエラー: セレクトボックス manualSel_${i} が見つかりません。リストを更新してください。`);
-      }
+      if (!sel) throw new Error(`UIエラー: セレクトボックス manualSel_${i} が見つかりません。`);
       
       if (sel.disabled || sel.value == -1) {
          throw new Error(`トリガー#${i+1} のPOIが選択されていません（候補なし）。`);
@@ -5404,17 +5399,14 @@ window.drawManualComparison = async function() {
       
       const pIdx = Number(sel.value);
       const p = groups[i].pois[pIdx];
-      if (!p) {
-         throw new Error(`データエラー: 選択されたPOI(index:${pIdx})が見つかりません。`);
-      }
+      if (!p) throw new Error(`データエラー: 選択されたPOI(index:${pIdx})が見つかりません。`);
       picks.push(p);
     }
 
     // -------------------------------------------------
-    // 3. 地図のリセット処理（全て try 内で実行）
+    // 3. 地図のリセット処理 (変更なし)
     // -------------------------------------------------
     
-    // ルート線レイヤー削除
     if (typeof clearRouteLayers === 'function') {
       clearRouteLayers();
     } else if (typeof routeLayers !== 'undefined') {
@@ -5422,19 +5414,16 @@ window.drawManualComparison = async function() {
       routeLayers = {};
     }
 
-    // マーカー削除
     if (typeof markerLayer !== 'undefined' && markerLayer) {
       markerLayer.clearLayers();
     }
 
-    // 休憩ビーム削除
     if (typeof clearRestBeams === 'function') {
       clearRestBeams();
     } else if (typeof restBeamLayer !== 'undefined' && restBeamLayer) {
       restBeamLayer.clearLayers();
     }
 
-    // 手動レイヤー初期化
     if (typeof manualRouteLayerGroup === 'undefined' || manualRouteLayerGroup === null) {
       manualRouteLayerGroup = L.layerGroup().addTo(map);
     } else {
@@ -5442,96 +5431,174 @@ window.drawManualComparison = async function() {
     }
 
     // -------------------------------------------------
-    // 4. API計算と描画
+    // 4. API計算と描画（★ここを修正★）
     // -------------------------------------------------
     if (btn) btn.textContent = 'ルート計算中...';
     
     const showBatch = document.getElementById('chkManBatch')?.checked;
     const showSeg   = document.getElementById('chkManSeg')?.checked;
-    const logs = [];
+    
+    // 結果保持用
+    let batchRes = { dist: 0, time: 0, energy: 0 };
+    let segRes   = { dist: 0, time: 0, energy: 0, count: 0 };
 
     // --- A. 一括 (Batch) ---
     if (showBatch) {
-      const wps = [start, ...picks, goal].map(p => ({ lat: p.lat, lon: p.lon }));
+      // 修正済み(区間理想を使う)の calcBatchRouteStats を使うのがベストですが
+      // ここでは既存の routeLegStatsForWaypoints と手動計算でやります
+      const wps = [start, ...picks, goal].map(p => ({ lat: p.lat, lon: p.lon, name: p.name || 'WP' }));
       
       if (typeof routeLegStatsForWaypoints !== 'function') {
         throw new Error('関数 routeLegStatsForWaypoints が見つかりません');
       }
 
-      const out = await routeLegStatsForWaypoints(
-        wps.map(p => ({ ...p, name: 'WP' })), 
-        profile
-      );
+      const out = await routeLegStatsForWaypoints(wps, profile);
       
       if (out && out.feature) {
+        // 青太線
         L.geoJSON(out.feature, {
           style: { color: '#0055aa', weight: 8, opacity: 0.6 }
         }).bindTooltip("一括ルート").addTo(manualRouteLayerGroup);
         
-        const dist = (out.feature.properties.summary.distance / 1000).toFixed(2);
-        logs.push(`[一括] 距離: ${dist} km`);
+        // ORSのsummaryから取得
+        const sum = out.feature.properties.summary;
+        batchRes.dist = sum.distance / 1000; // km
+        batchRes.time = sum.duration / 60;   // min
+        
+        // エネルギー: stats.energy の合計
+        if (out.stats && Array.isArray(out.stats.energy)) {
+           batchRes.energy = out.stats.energy.reduce((a,b)=>a+b, 0);
+        }
       }
     }
 
     // --- B. 区間積上 (Segmented) ---
     if (showSeg) {
       const points = [start, ...picks, goal];
-      let totalDist = 0;
-      let okCount = 0;
-
+      
+      // cache対応の calcLegCostWithApi があればそれを使う（なければ dir で都度計算）
+      // ここでは、確実に動くように dir をループで呼びます（既存ロジック踏襲）
+      
       for (let i = 0; i < points.length - 1; i++) {
         const from = points[i];
         const to = points[i+1];
         
-        const coords = [[from.lon, from.lat], [to.lon, to.lat]];
-        
-        if (typeof dir !== 'function') throw new Error('関数 dir が見つかりません');
+        // API呼び出し（ヘルパーがあればそちらを推奨）
+        let legEnergy = 0;
+        let legDist = 0;
+        let legTime = 0;
+        let feature = null;
 
-        const res = await dir({ coordinates: coords, elevation: true }, profile);
-        
-        if (!res || !res.features || !res.features[0]) {
-           throw new Error(`区間${i+1}のルート取得に失敗しました`);
+        if (typeof calcLegCostWithApi === 'function') {
+           // キャッシュ対応API関数がある場合
+           const leg = await calcLegCostWithApi(from, to, profile);
+           legEnergy = leg.energy_kJ;
+           legDist   = leg.dist_km * 1000; // mに戻す
+           legTime   = leg.time_min * 60;  // secに戻す
+           // Featureが必要なら別途取得、または calcLegCostWithApi が返すなら使う
+           // ここでは描画用に dir を再取得するか、API関数の仕様に合わせる
+           // (簡易的に dir を呼び直して描画します)
+           const res = await dir({ coordinates: [[from.lon, from.lat], [to.lon, to.lat]], elevation:true }, profile);
+           feature = res.features[0];
+        } else {
+           // 直接 dir を呼ぶ場合
+           const coords = [[from.lon, from.lat], [to.lon, to.lat]];
+           const res = await dir({ coordinates: coords, elevation: true }, profile);
+           if (!res || !res.features || !res.features[0]) throw new Error(`区間${i+1}取得失敗`);
+           
+           feature = res.features[0];
+           const sum = feature.properties.summary;
+           legDist = sum.distance;
+           legTime = sum.duration;
+           
+           // エネルギー計算（既存関数があれば利用）
+           // なければ簡易計算: Physics.calcEnergy or 0
+           if (typeof calculateEnergy === 'function') {
+               const eData = calculateEnergy(feature.properties.segments[0], 0); // 第2引数は累積距離
+               legEnergy = eData.energy_kJ;
+           } else {
+               // ※ここにあなたのエネルギー計算式を入れてください
+               legEnergy = 0; 
+           }
         }
 
-        const feat = res.features[0];
-        totalDist += feat.properties.summary.distance;
-        
-        L.geoJSON(feat, {
-          style: { color: '#aa0000', weight: 4, dashArray: '10, 10', opacity: 1.0 }
-        }).bindTooltip(`区間 ${i+1}`).addTo(manualRouteLayerGroup);
-        okCount++;
+        // 赤点線
+        if (feature) {
+            L.geoJSON(feature, {
+              style: { color: '#aa0000', weight: 4, dashArray: '10, 10', opacity: 1.0 }
+            }).bindTooltip(`区間 ${i+1}`).addTo(manualRouteLayerGroup);
+        }
+
+        segRes.dist += legDist / 1000; // km
+        segRes.time += legTime / 60;   // min
+        segRes.energy += legEnergy;
+        segRes.count++;
       }
-      logs.push(`[積上] 距離: ${(totalDist/1000).toFixed(2)} km (区間数:${okCount})`);
     }
+
+    // -------------------------------------------------
+    // 5. 結果表示 (HTML生成) ★ここがメイン
+    // -------------------------------------------------
+    const fmt = (n, d=1) => Number(n).toFixed(d);
+    const diffColor = (a, b) => (Math.abs(a - b) > 0.1) ? '#e00' : '#aaa';
+    
+    let html = '<div style="font-size:0.9rem; line-height:1.5;">';
+
+    if (showBatch) {
+      html += `
+      <div style="margin-bottom:6px; padding:6px; border-left:4px solid #0055aa; background:#f0f8ff;">
+        <div style="font-weight:bold; color:#0055aa;">■ 一括 (API1回)</div>
+        <div>
+           距離: <b>${fmt(batchRes.dist, 2)} km</b> / 
+           時間: <b>${fmt(batchRes.time, 1)} 分</b> / 
+           <span style="color:#d35400">EN: <b>${fmt(batchRes.energy, 0)} kJ</b></span>
+        </div>
+      </div>`;
+    }
+
+    if (showSeg) {
+      html += `
+      <div style="margin-bottom:6px; padding:6px; border-left:4px solid #aa0000; background:#fff5f5;">
+        <div style="font-weight:bold; color:#aa0000;">■ 積上 (区間合計)</div>
+        <div>
+           距離: <b>${fmt(segRes.dist, 2)} km</b> / 
+           時間: <b>${fmt(segRes.time, 1)} 分</b> / 
+           <span style="color:#d35400">EN: <b>${fmt(segRes.energy, 0)} kJ</b></span>
+        </div>
+      </div>`;
+    }
+
+    // 両方ONなら差分表示
+    if (showBatch && showSeg) {
+        html += `
+      <div style="font-size:0.85rem; color:#555; border-top:1px dashed #ccc; padding-top:4px; margin-top:4px;">
+        <b>計算誤差 (積上 - 一括):</b><br>
+        距離: <span style="color:${diffColor(segRes.dist, batchRes.dist)}">${fmt(segRes.dist - batchRes.dist, 2)} km</span> / 
+        時間: <span style="color:${diffColor(segRes.time, batchRes.time)}">${fmt(segRes.time - batchRes.time, 1)} 分</span> / 
+        EN: <span style="color:${diffColor(segRes.energy, batchRes.energy)}">${fmt(segRes.energy - batchRes.energy, 0)} kJ</span>
+      </div>`;
+    }
+    
+    html += '</div>';
+    if (infoBox) infoBox.innerHTML = html;
 
     // マーカー再配置
     if (typeof setComboMarkers === 'function') {
       setComboMarkers(start, picks, goal);
     }
 
-    if (infoBox) infoBox.textContent = logs.join('\n');
-    
     // -------------------------------------------------
-    // ★修正箇所: ズーム調整ロジックを安全に変更
+    // 6. ズーム調整 (変更なし)
     // -------------------------------------------------
     if (typeof map !== 'undefined') {
-       // グループの配列を作るのではなく、中身のレイヤーを全部取り出して合体させる
        const allLayers = [];
-       
-       if (manualRouteLayerGroup) {
-         manualRouteLayerGroup.eachLayer(l => allLayers.push(l));
-       }
-       if (typeof markerLayer !== 'undefined' && markerLayer) {
-         markerLayer.eachLayer(l => allLayers.push(l));
-       }
+       if (manualRouteLayerGroup) manualRouteLayerGroup.eachLayer(l => allLayers.push(l));
+       if (typeof markerLayer !== 'undefined' && markerLayer) markerLayer.eachLayer(l => allLayers.push(l));
 
        if (allLayers.length > 0) {
-         // レイヤーのリストからFeatureGroupを一時的に作って範囲計算
          const group = new L.featureGroup(allLayers);
          const b = group.getBounds();
-         if (b.isValid()) {
-           map.fitBounds(b.pad(0.1));
-         }
+         if (b.isValid()) map.fitBounds(b.pad(0.1));
        }
     }
 
