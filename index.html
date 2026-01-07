@@ -3480,19 +3480,17 @@ window.__viterbiAllEdgeRows = Array.from(window.__viterbiEdgeAgg.values()).map(x
       }
     }
 
-    /* ---------- 対策G: SG排除 + ビーム再ランキング ---------- */
-  if (isAlgoEnabled('dbg_G')) { // ※テスト用に true にしておくと強制実行されます
+/* ---------- 対策G: SG排除 + Viterbi ---------- */
+  if (isAlgoEnabled('dbg_G') || true) { 
     const t0 = performance.now();
     try {
-      // groupsC があればそれを使う（端処理用グループ）、なければ vitGroups
+      // 端処理用の候補があれば優先、なければ通常候補
       const targetGroups = (typeof groupsC !== 'undefined' && groupsC.length) ? groupsC : vitGroups;
 
-      const gList = await solveMeasureG(start, goal, targetGroups, profile, { 
-        beamWidth: 5  // ビーム幅（5〜10推奨）
-      });
+      const gList = await solveMeasureG(start, goal, targetGroups, profile);
       
       const t1 = performance.now();
-      pushAlgoResultsForCsv('G', 'SG排除+再ランク', gList, t1 - t0, -1, 0);
+      pushAlgoResultsForCsv('G', 'SG排除+Viterbi', gList, t1 - t0, -1, 0);
 
     } catch (e) {
       console.error('Algo G fail:', e);
@@ -4917,106 +4915,116 @@ function applyAutoNamesToAllPois(){
 }
 
 /* ==========================================================
-   【対策G】SG排除ビームサーチ (Start/Goal区間無視 + 精密評価)
+   【対策G】SG排除 Viterbi
+   ・スタート→最初の休憩、最後の休憩→ゴールのコストを無視(0)
+   ・中間の区間のみ、エネルギーMSEで最適化
+   ・各POI地点で「そこに至る最短の親」を記憶して経路復元
    ========================================================== */
-async function solveMeasureG(start, goal, groups, profile, opt = {}) {
+async function solveMeasureG(start, goal, groups, profile) {
   const T = Array.isArray(groups) ? groups.length : 0;
   if (!T) return [];
 
-  // ビーム幅（デフォルト5：上位5件を残しながら進む）
-  const beamWidth = Math.max(1, Number(opt.beamWidth) || 5);
-
-  // キャッシュ（API節約）
-  const cache = new Map();
+  // 理想値 (ターゲットとなるエネルギー消費量)
+  const ideals = getIdealPerLegs();
+  const idealE = ideals.idealEnergyPerLeg;
   
-  // 内部ヘルパー：ルート統計を取得し「SG排除スコア」を計算
-  const getStatsAndScore = async (wps) => {
-    // 座標キーでキャッシュ確認
-    const key = wps.map(p => `${Number(p.lat).toFixed(5)},${Number(p.lon).toFixed(5)}`).join('|');
-    if (cache.has(key)) return cache.get(key);
+  // キャッシュ (API節約)
+  const apiFunc = calcLegCostWithApi; // 必要に応じて cached版に変更可
 
-    const res = await routeLegStatsForWaypoints(wps, profile);
-    let score = Infinity;
+  // DPテーブル初期化
+  const Klist = groups.map(g => g.length);
+  const dp = Array.from({length: T}, (_, t) => new Array(Klist[t]).fill(Infinity));
+  const prev = Array.from({length: T}, (_, t) => new Array(Klist[t]).fill(-1));
 
-    // SG排除スコア計算：エネルギー配列の「最初」と「最後」をカットして評価
-    if (res?.stats?.energy?.length) {
-      const eArr = res.stats.energy;
-      if (eArr.length > 2) {
-        // 中間区間のみ抽出
-        const core = eArr.slice(1, eArr.length - 1);
-        score = Physics.costMSE(Physics.stdDev(core), 0);
-      } else {
-        // 区間不足なら全体評価
-        score = Physics.costMSE(Physics.stdDev(eArr), 0);
-      }
-    }
-    
-    const val = { feature: res.feature, stats: res.stats, score };
-    cache.set(key, val);
-    return val;
-  };
-
-  // --- ビーム初期化 ---
-  // { score, picks: [POIリスト] }
-  let beam = [{ score: 0, picks: [] }];
-
-  // Step 0: Start -> Group 0 (コスト0扱いで展開)
-  let nextBeam = [];
-  for (let j = 0; j < groups[0].length; j++) {
-    nextBeam.push({ score: 0, picks: [groups[0][j]] });
+  // --- Step 0: Start -> Group 0 ---
+  // ★SG排除: スタート区間のコストは無視(=0)
+  for (let k = 0; k < Klist[0]; k++) {
+    // 実際にはAPI呼んで距離などは計算してもいいが、スコアには入れない
+    // ここでは高速化のため計算自体スキップしてコスト0とする
+    dp[0][k] = 0; 
   }
-  beam = nextBeam;
 
-  // Step 1..T-1 (中間区間)
+  // --- Step 1..T-1: 中間区間 ---
+  // ここだけ真面目にコスト(MSE)を計算して累積する
   for (let t = 1; t < T; t++) {
-    nextBeam = [];
-    
-    // 現在のビーム × 次の候補
-    for (const parent of beam) {
-      for (let j = 0; j < groups[t].length; j++) {
-        const currP = groups[t][j];
-        const newPicks = [...parent.picks, currP];
+    for (let j = 0; j < Klist[t]; j++) {
+      const toPoi = groups[t][j];
+      let bestCost = Infinity;
+      let bestIdx = -1;
+
+      for (let i = 0; i < Klist[t-1]; i++) {
+        // 前の地点までのコストが無限大ならスキップ
+        if (!Number.isFinite(dp[t-1][i])) continue;
+
+        const fromPoi = groups[t-1][i];
         
-        try {
-           // ここまでのルート（Start + Picks）で評価
-           const wps = [start, ...newPicks];
-           const res = await getStatsAndScore(wps);
-           
-           nextBeam.push({
-             score: res.score, // SG排除スコア
-             picks: newPicks,
-             feature: res.feature,
-             stats: res.stats
-           });
-        } catch (e) { /* 無視 */ }
+        // 区間コスト計算
+        // (API呼び出し: 距離・勾配からエネルギーを計算)
+        const leg = await apiFunc(fromPoi, toPoi, profile);
+        
+        // ★中間の区間なので、理想値とのズレ(MSE)をコストとして加算
+        const legCost = Physics.costMSE(leg.energyKj, idealE);
+        
+        const currentTotal = dp[t-1][i] + legCost;
+        if (currentTotal < bestCost) {
+          bestCost = currentTotal;
+          bestIdx = i;
+        }
       }
+      dp[t][j] = bestCost;
+      prev[t][j] = bestIdx;
     }
-    // 上位N件に絞る
-    nextBeam.sort((a, b) => a.score - b.score);
-    beam = nextBeam.slice(0, beamWidth);
   }
 
-  // Last Step: Group Last -> Goal
-  // ※ゴール区間も無視するが、描画用にルートは引く
-  const finalResults = [];
-  for (const cand of beam) {
-    const fullPicks = cand.picks;
-    const wps = [start, ...fullPicks, goal];
-    try {
-      const out = await getStatsAndScore(wps);
-      finalResults.push({
-        score: out.score,     // SG排除済みの最終スコア
-        rawScore: out.score,  // (比較用)
-        feature: out.feature,
-        stats: out.stats,
-        picks: fullPicks,
-        picksByTrigger: fullPicks
-      });
-    } catch(e) { /* 無視 */ }
+  // --- Last Step: Group Last -> Goal ---
+  // ★SG排除: ゴール区間のコストも無視する
+  // 最終的な休憩地点(Last)までの累積コストが一番小さいものを選ぶ
+  
+  const lastT = T - 1;
+  let finalBestCost = Infinity;
+  let finalBestIdx = -1;
+
+  for (let k = 0; k < Klist[lastT]; k++) {
+    // ここまでのコスト
+    const currentCost = dp[lastT][k];
+    if (!Number.isFinite(currentCost)) continue;
+
+    // ゴールへの区間計算はスキップ（評価に入れない）
+    // そのままのスコアで比較
+    if (currentCost < finalBestCost) {
+      finalBestCost = currentCost;
+      finalBestIdx = k;
+    }
   }
 
-  finalResults.sort((a, b) => a.score - b.score);
-  return finalResults;
+  if (finalBestIdx < 0) return [];
+
+  // --- 経路復元 (Backtrack) ---
+  const picks = new Array(T);
+  let cur = finalBestIdx;
+  for (let t = lastT; t >= 0; t--) {
+    picks[t] = groups[t][cur];
+    cur = prev[t][cur];
+  }
+
+  // --- 最終情報の構築 ---
+  // 選ばれたPOIリストを使って、全区間の詳細データ(GeoJSON等)を取得
+  let feature = null, stats = {dist:[], time:[], energy:[]};
+  try {
+    const wps = [start, ...picks, goal].map(p=>({lat:p.lat, lon:p.lon, name:p.name||'POI'}));
+    const out = await routeLegStatsForWaypoints(wps, profile);
+    feature = out?.feature;
+    if(out?.stats) stats = out.stats;
+  } catch(e) { console.warn('Stats build fail', e); }
+
+  return [{
+    score: finalBestCost, // 中間区間のMSE総和
+    rawScore: finalBestCost,
+    feature,
+    stats,
+    picks,
+    picksByTrigger: picks
+  }];
 }
 
 function formatNum(x, digits=3){
