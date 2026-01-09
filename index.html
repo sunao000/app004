@@ -5295,7 +5295,7 @@ async function solveMeasureG(start, goal, groups, profile) {
   if (!T) return [];
 
   // 1. 設定
-  const BEAM_WIDTH = 30; // 予選通過させる候補数 (TopK)
+  const BEAM_WIDTH = 10; // 予選通過させる候補数 (TopK)
   
   // ★変更点1：距離の理想値を取得
   const ideals = getIdealPerLegs();
