@@ -5398,60 +5398,58 @@ async function solveMeasureG(start, goal, groups, profile) {
 
 /* ==========================================================
    【対策H】SG排除 Viterbi (DP) + 一括リランク
-   ・Start/Goal区間を無視するのはGと同じ
-   ・ただし、中間は「各POIへの最良パスを1つ残す(Viterbi)」方式
+   ・コスト定義：理想距離との二乗誤差(MSE)を維持
+   ・探索方式：Viterbi (各POIに対して、最もMSEが低いパスを1つだけ残す)
    ========================================================== */
 async function solveMeasureH(start, goal, groups, profile) {
   const T = Array.isArray(groups) ? groups.length : 0;
   if (!T) return [];
 
-  // ★変更1: 距離の理想値を取得
+  // ★1. 理想距離の取得
   const ideals = getIdealPerLegs();
   const idealDistPerLeg = ideals.idealDistPerLeg; 
 
   const apiFunc = calcLegCostWithApi; 
 
   // --- Step 0: Start -> Group 0 (Layer 0) ---
-  // Start区間はコスト無視(=0)で初期化
-  // currentPaths[i] には「groups[0][i] に至るまでのパス情報」が入る
+  // SG排除のため、Start地点からのコストは0で初期化
   let currentPaths = groups[0].map(poi => ({
     picks: [poi],
     currentCost: 0,
     lastNode: poi,
-    valid: true // 生存フラグ
+    valid: true
   }));
 
   // --- Step 1..T-1: 中間区間 (Layer t) ---
   for (let t = 1; t < T; t++) {
     const nextGroup = groups[t];
     
-    // 次の層の各POIについて「ベストな親」を探す
-    // nextPaths[j] = groups[t][j] に至る最良パス
+    // 次の層の各POIについて「ベストな親」を1つだけ選ぶ (Viterbiの定義)
     const nextPaths = new Array(nextGroup.length).fill(null);
 
-    // 次の層の各ノード(j)に対してループ
+    // 次の層の各ノード(j)に対して
     for (let j = 0; j < nextGroup.length; j++) {
       const nextPoi = nextGroup[j];
       let bestCost = Infinity;
       let bestPathObj = null;
 
-      // 前の層の全ノード(i)から、jへの遷移を試す
+      // 前の層の全ノード(i)からの遷移を評価
       for (let i = 0; i < currentPaths.length; i++) {
         const parent = currentPaths[i];
         if (!parent || !parent.valid) continue;
 
         try {
-          // API負荷軽減（ループ内待機）
-          await new Promise(r => setTimeout(r, 1000)); 
+          // API負荷軽減
+          await new Promise(r => setTimeout(r, 200)); 
 
           const leg = await apiFunc(parent.lastNode, nextPoi, profile);
           
-          // 距離MSEペナルティ
+          // ★2. コスト計算 (MSE: 理想距離との差の二乗)
           const diff = leg.distKm - idealDistPerLeg;
-          const penalty = diff * diff;
+          const penalty = diff * diff; 
           const newCost = parent.currentCost + penalty;
 
-          // Viterbi: 最小コストなら更新
+          // 最小コストなら更新
           if (newCost < bestCost) {
             bestCost = newCost;
             bestPathObj = {
@@ -5462,26 +5460,24 @@ async function solveMeasureH(start, goal, groups, profile) {
             };
           }
         } catch (e) {
-          console.warn(`Algo H: edge calc failed at layer ${t}, node ${j}`, e);
+          console.warn(`Algo H: edge calc failed at layer ${t}, parent ${i}->node ${j}`, e);
         }
       }
       
-      // j に至るベストパスを保存
+      // ノードjへの最良パスを確定
       nextPaths[j] = bestPathObj;
     }
 
-    // 生存しているパスだけで更新（nullは除外しないとインデックスがズレるので、validフラグ等で管理するか、nullのままにして次で弾く）
-    // ここでは単純に次のループで !parent チェックしているので nextPaths をそのまま渡す
+    // 次の層へ引き継ぎ
     currentPaths = nextPaths;
+    console.log(`Layer ${t} finished. Valid paths: ${currentPaths.filter(p => p && p.valid).length}`);
   }
 
   // --- Last Step: 候補の確定 ---
-  // currentPaths には「最後の休憩地点の各POI」に至るベストパスが入っている
   const candidates = currentPaths.filter(p => p && p.valid);
+  console.log(`Algo H: 予選通過 ${candidates.length} 件。決勝(リランク)開始...`);
 
-  console.log(`Algo H: 予選通過 ${candidates.length} 件 (各POIのベスト)。決勝(リランク)開始...`);
-
-  // --- Final Step: 一括APIでリランク (決勝戦) ---
+  // --- Final Step: 一括APIでリランク ---
   const finalResults = [];
 
   for (let i = 0; i < candidates.length; i++) {
@@ -5492,6 +5488,8 @@ async function solveMeasureH(start, goal, groups, profile) {
       await new Promise(r => setTimeout(r, 2000));
 
       const out = await routeLegStatsForWaypoints(waypoints, profile);
+      
+      // 最終評価もMSE
       const distScore = routeDistMseFromStats(out.stats, idealDistPerLeg);
 
       finalResults.push({
@@ -5512,6 +5510,7 @@ async function solveMeasureH(start, goal, groups, profile) {
     }
   }
 
+  // スコア(MSE)が小さい順に並べ替え
   finalResults.sort((a, b) => a.score - b.score);
   finalResults.forEach((r, idx) => r.rank = idx + 1);
 
