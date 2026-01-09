@@ -3804,25 +3804,28 @@ async function showLinearComboRoute(row){
   setActiveButton(null);
 }
 
-/* ==========================================================
-   【修正版】CSV出力用データ蓄積 (スコア順に強制ソート)
-   ========================================================== */
+/* ===== 【修正版】CSV出力用データ蓄積（総当たりは全件出力） ===== */
 function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls, overpassCalls){
   if (!Array.isArray(resultList) || !resultList.length) return;
   if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
 
-  // ★追加: ここで「スコア(距離MSE)が小さい順」に並べ替える
+  // 1. スコア順(距離MSEが小さい順)に並べ替える
   const sorted = resultList.slice().sort((a, b) => {
     const sA = (typeof a.score === 'number') ? a.score : 999999;
     const sB = (typeof b.score === 'number') ? b.score : 999999;
     return sA - sB;
   });
 
-  // 上位3件を保存
-  const top = sorted.slice(0, 3);
+  // 2. 出力件数を決定する
+  // ★変更点: 「総当たり」か「直線距離」なら全件出す。それ以外は上位3件に絞る。
+  let outputList = sorted;
+  if (algoCode !== 'bruteforce' && algoCode !== 'linear') {
+    outputList = sorted.slice(0, 3);
+  }
 
-  top.forEach((r, idx)=>{
-    // Excel上の順位
+  // 3. 行データの生成
+  outputList.forEach((r, idx)=>{
+    // 順位（リスト内の順番）
     const rank = idx + 1;
 
     // 統計値
@@ -3830,7 +3833,7 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
     const sigmaTime   = stdDev(r.stats && r.stats.time ? r.stats.time : []);
     const sigmaEnergy = stdDev(r.stats && r.stats.energy ? r.stats.energy : []);
 
-    // CSV用のスコア (念のためunifiedScoreForCompareを通すが、中身はr.scoreと同じはず)
+    // CSV用のスコア
     const scoreForCsv = unifiedScoreForCompare(r, null);
 
     // POI情報
@@ -3843,7 +3846,7 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       .filter(Boolean)
       .join(' | ');
 
-    // 合計距離・時間の安全な取得
+    // 合計距離・時間の補完
     let totalDistM = 0;
     let totalTimeS = 0;
 
@@ -3863,12 +3866,12 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       totalTimeS = r.stats.time.reduce((a, b) => a + b, 0);
     }
 
-    // 蓄積
+    // データ蓄積
     window.__algoCompareRows.push({
       algo: algoCode,
       label,
-      rank,                    // スコア順の順位
-      bfRank: (r.bfRank ?? '-'), // 総当たりでの順位(固定)
+      rank,
+      bfRank: (r.bfRank ?? '-'), 
       score: (typeof scoreForCsv === 'number') ? scoreForCsv.toFixed(4) : scoreForCsv,
       rawScore: (r.rawScore != null) ? Number(r.rawScore).toFixed(4) : '',
       
