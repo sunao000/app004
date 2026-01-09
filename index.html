@@ -3804,18 +3804,25 @@ async function showLinearComboRoute(row){
   setActiveButton(null);
 }
 
-/* ===== 【変更】CSV出力用データ蓄積（距離MSE対応・安全版） ===== */
+/* ==========================================================
+   【修正版】CSV出力用データ蓄積 (スコア順に強制ソート)
+   ========================================================== */
 function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls, overpassCalls){
   if (!Array.isArray(resultList) || !resultList.length) return;
   if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
 
-  // ★念のため理想値を取得
-  const ideals = getIdealPerLegs();
+  // ★追加: ここで「スコア(距離MSE)が小さい順」に並べ替える
+  const sorted = resultList.slice().sort((a, b) => {
+    const sA = (typeof a.score === 'number') ? a.score : 999999;
+    const sB = (typeof b.score === 'number') ? b.score : 999999;
+    return sA - sB;
+  });
 
-  // ★重要：ここで「距離MSE」のスコアが良い順に並び替え
-  const sorted = sortResultsByUnifiedScore(resultList, null);
+  // 上位3件を保存
+  const top = sorted.slice(0, 3);
 
-  sorted.forEach((r, idx)=>{
+  top.forEach((r, idx)=>{
+    // Excel上の順位
     const rank = idx + 1;
 
     // 統計値
@@ -3823,10 +3830,10 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
     const sigmaTime   = stdDev(r.stats && r.stats.time ? r.stats.time : []);
     const sigmaEnergy = stdDev(r.stats && r.stats.energy ? r.stats.energy : []);
 
-    // スコア
+    // CSV用のスコア (念のためunifiedScoreForCompareを通すが、中身はr.scoreと同じはず)
     const scoreForCsv = unifiedScoreForCompare(r, null);
 
-    // POI名
+    // POI情報
     let poiList = (r.picks || r.picksByTrigger || []).filter(Boolean);
     if (Array.isArray(poiList[0])) poiList = poiList.flat().filter(Boolean);
 
@@ -3836,8 +3843,7 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       .filter(Boolean)
       .join(' | ');
 
-    // ▼▼▼ 修正点：合計距離・時間の安全な取得 ▼▼▼
-    // r.dist があればそれを使うが、なければ feature.summary や stats配列の合計から算出する
+    // 合計距離・時間の安全な取得
     let totalDistM = 0;
     let totalTimeS = 0;
 
@@ -3856,17 +3862,16 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
     } else if (Array.isArray(r.stats?.time)) {
       totalTimeS = r.stats.time.reduce((a, b) => a + b, 0);
     }
-    // ▲▲▲ 修正点ここまで ▲▲▲
 
+    // 蓄積
     window.__algoCompareRows.push({
       algo: algoCode,
       label,
-      rank,
-      bfRank: (r.bfRank ?? '-'),
+      rank,                    // スコア順の順位
+      bfRank: (r.bfRank ?? '-'), // 総当たりでの順位(固定)
       score: (typeof scoreForCsv === 'number') ? scoreForCsv.toFixed(4) : scoreForCsv,
       rawScore: (r.rawScore != null) ? Number(r.rawScore).toFixed(4) : '',
       
-      // m -> km, sec -> min に変換
       dist: (totalDistM > 0) ? (totalDistM / 1000).toFixed(2) : '',
       time: (totalTimeS > 0) ? (totalTimeS / 60).toFixed(1)   : '',
       
@@ -3884,8 +3889,7 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
 }
   
 /* ==========================================================
-   【確認用】結果表示関数
-   ・bf_rankがあれば表示する
+   【修正版】結果表示関数 (スコア順に強制ソート)
    ========================================================== */
 function showAlgoListInPanel(panel, list, algoCode){
   if (!panel) return;
@@ -3894,26 +3898,55 @@ function showAlgoListInPanel(panel, list, algoCode){
     return;
   }
   
-  // アルゴリズムが決めた順序(list)をそのまま尊重して表示
-  // ※勝手な再ソートはしない
-  const top = list.slice(0, 3);
+  // ★追加: ここで「スコア(距離MSE)が小さい順」に並べ替える
+  // 元のリストを壊さないよう slice() してから sort() します
+  const sorted = list.slice().sort((a, b) => {
+    // スコアがない(null/undefined)場合は、一番後ろ(999999)へ
+    const sA = (typeof a.score === 'number') ? a.score : 999999;
+    const sB = (typeof b.score === 'number') ? b.score : 999999;
+    return sA - sB;
+  });
+
+  // 上位3件を表示
+  const top = sorted.slice(0, 3);
 
   top.forEach((r, idx)=>{
-    const rank = idx + 1; // そのアルゴリズム内での順位
+    // 画面上の順位（1位〜）
+    const rank = idx + 1;
+
     const score    = r.score    ?? null;
+    const rawScore = r.rawScore ?? null;
+
+    // 統計情報
+    const stats   = r.stats || {};
+    const distArr = Array.isArray(stats.dist)   ? stats.dist   : [];
+    const timeArr = Array.isArray(stats.time)   ? stats.time   : [];
+    const eneArr  = Array.isArray(stats.energy) ? stats.energy : [];
+
+    const sigDist = distArr.length ? stdDev(distArr) : null;
+    const sigTime = timeArr.length ? stdDev(timeArr) : null;
+    const sigEn   = eneArr.length  ? stdDev(eneArr)  : null;
+
+    // POI名
     const picksArr = (r.picks || r.picksByTrigger || []);
-    const poiNames = picksArr.filter(Boolean).map(p => p.name || 'POI').join(' -> ');
+    const poiNames = picksArr
+      .filter(Boolean)
+      .map(p => p.name || 'POI')
+      .join(' -> ');
 
     panel.textContent += `#${rank}  score=${score}\n`;
-    
-    // ★ここがあればOKです
+    if (rawScore != null) panel.textContent += `  rawScore=${rawScore}\n`;
+
+    // 総当たり順位 (あれば)
     if (r.bfRank != null && r.bfRank !== '-') {
       panel.textContent += `  bf_rank=${r.bfRank}\n`;
     } else {
       panel.textContent += `  bf_rank=(圏外)\n`;
     }
-    
-    // ... (σなどの表示) ...
+
+    if (sigDist != null) panel.textContent += `  σ距離=${sigDist.toFixed(3)}\n`;
+    if (sigTime != null) panel.textContent += `  σ時間=${sigTime.toFixed(3)}\n`;
+    if (sigEn   != null) panel.textContent += `  σエネルギー=${sigEn.toFixed(3)}\n`;
 
     panel.textContent += `  POI: ${poiNames}\n\n`;
   });
