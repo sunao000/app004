@@ -3804,30 +3804,29 @@ async function showLinearComboRoute(row){
   setActiveButton(null);
 }
 
-/* ===== 【変更】CSV出力用データ蓄積（距離MSE対応） ===== */
+/* ===== 【変更】CSV出力用データ蓄積（距離MSE対応・安全版） ===== */
 function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls, overpassCalls){
   if (!Array.isArray(resultList) || !resultList.length) return;
   if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
 
-  // ★念のため理想値を取得（sortResultsByUnifiedScore内で使われます）
+  // ★念のため理想値を取得
   const ideals = getIdealPerLegs();
 
-  // ★重要：ここで「距離MSE」のスコアが良い順に並び替えられます
-  // (sortResultsByUnifiedScore が unifiedScoreForCompare を呼ぶため)
+  // ★重要：ここで「距離MSE」のスコアが良い順に並び替え
   const sorted = sortResultsByUnifiedScore(resultList, null);
 
   sorted.forEach((r, idx)=>{
-    const rank = idx + 1; // これがExcelの順位になります
+    const rank = idx + 1;
 
-    // 統計値（参考情報として出力）
+    // 統計値
     const sigmaDist   = stdDev(r.stats && r.stats.dist ? r.stats.dist : []);
     const sigmaTime   = stdDev(r.stats && r.stats.time ? r.stats.time : []);
     const sigmaEnergy = stdDev(r.stats && r.stats.energy ? r.stats.energy : []);
 
-    // ★変更：CSVに出るスコアも「距離MSE」で統一
+    // スコア
     const scoreForCsv = unifiedScoreForCompare(r, null);
 
-    // POI名の整形
+    // POI名
     let poiList = (r.picks || r.picksByTrigger || []).filter(Boolean);
     if (Array.isArray(poiList[0])) poiList = poiList.flat().filter(Boolean);
 
@@ -3837,16 +3836,44 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       .filter(Boolean)
       .join(' | ');
 
+    // ▼▼▼ 修正点：合計距離・時間の安全な取得 ▼▼▼
+    // r.dist があればそれを使うが、なければ feature.summary や stats配列の合計から算出する
+    let totalDistM = 0;
+    let totalTimeS = 0;
+
+    if (typeof r.dist === 'number') {
+      totalDistM = r.dist;
+    } else if (r.feature?.properties?.summary?.distance) {
+      totalDistM = Number(r.feature.properties.summary.distance);
+    } else if (Array.isArray(r.stats?.dist)) {
+      totalDistM = r.stats.dist.reduce((a, b) => a + b, 0);
+    }
+
+    if (typeof r.time === 'number') {
+      totalTimeS = r.time;
+    } else if (r.feature?.properties?.summary?.duration) {
+      totalTimeS = Number(r.feature.properties.summary.duration);
+    } else if (Array.isArray(r.stats?.time)) {
+      totalTimeS = r.stats.time.reduce((a, b) => a + b, 0);
+    }
+    // ▲▲▲ 修正点ここまで ▲▲▲
+
     window.__algoCompareRows.push({
       algo: algoCode,
       label,
-      rank,                   // 距離MSE順のランク
-      bfRank: (r.bfRank ?? ''), // 総当たりでのランク（総当たりも距離MSE化済みならOK）
-      score: scoreForCsv,     // 距離MSEスコア
-      rawScore: r.rawScore,
-      sigmaDist,
-      sigmaTime,
-      sigmaEnergy,
+      rank,
+      bfRank: (r.bfRank ?? '-'),
+      score: (typeof scoreForCsv === 'number') ? scoreForCsv.toFixed(4) : scoreForCsv,
+      rawScore: (r.rawScore != null) ? Number(r.rawScore).toFixed(4) : '',
+      
+      // m -> km, sec -> min に変換
+      dist: (totalDistM > 0) ? (totalDistM / 1000).toFixed(2) : '',
+      time: (totalTimeS > 0) ? (totalTimeS / 60).toFixed(1)   : '',
+      
+      sigmaDist: (typeof sigmaDist === 'number') ? sigmaDist.toFixed(4) : '',
+      sigmaTime: (typeof sigmaTime === 'number') ? sigmaTime.toFixed(4) : '',
+      sigmaEnergy: (typeof sigmaEnergy === 'number') ? sigmaEnergy.toFixed(4) : '',
+      
       timeMs: elapsedMs ?? null,
       orsCalls,
       overpassCalls,
