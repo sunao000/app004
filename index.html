@@ -1702,8 +1702,17 @@ async function overpassQuery(query) {
   throw lastError || new Error('[Overpass] All endpoints failed.');
 }
 
-// 2. POI検索 (半径を最大10kmに制限して504エラーを防ぐ)
+/* ==========================================================
+   【修正版】POI検索 (座標バリデーション & 半径制限強化)
+   ========================================================== */
 async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
+  // ★追加: 座標が数値でない場合は即座に空を返す（400エラー防止）
+  // これがないと、計算ミスの NaN がそのまま API に飛んでエラーになります
+  if (!Number.isFinite(latRaw) || !Number.isFinite(lonRaw)) {
+    console.error('[fetchPoisAround] Invalid coordinates:', latRaw, lonRaw);
+    return [];
+  }
+
   const round6 = v => Math.round(Number(v) * 1e6) / 1e6;
   const lat = round6(latRaw), lon = round6(lonRaw);
   const centerLL = L.latLng(lat, lon);
@@ -1723,16 +1732,15 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     ['amenity','toilets'], ['amenity','bench'], ['amenity','vending_machine']
   ];
 
-  // ★修正: 半径ステップの上限を減らす（最大10km）
+  // 半径ステップ (最大10km)
   const radiusSteps = (() => {
     const base = Math.max(100, Number(baseRadius) || 500); 
-    // 最大でも 10000m (10km) までにする
     const steps = [1000, 3000, 5000, 10000]; 
     const s = [base, ...steps].filter((v, i, a) => a.indexOf(v) === i && v >= base).sort((a,b)=>a-b);
     return s;
   })();
 
-  // クエリビルダ (変更なし)
+  // クエリビルダ
   const buildQuery = (tags, radius) => {
     if (!tags.length) return null;
     const clauses = [];
@@ -1746,6 +1754,7 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
       if (k === 'amenity' && values.includes('vending_machine')) {
         clauses.push(`node(around:${radius},${lat},${lon})["amenity"="vending_machine"]`);
       }
+      // 正規表現クエリの生成
       const re = '(' + values.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')';
       clauses.push(`node(around:${radius},${lat},${lon})["${k}"~"${re}"]`);
       clauses.push(`way(around:${radius},${lat},${lon})["${k}"~"${re}"]`);
@@ -1753,12 +1762,13 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     return `[out:json][timeout:25];(${clauses.join(';')});out center;`;
   };
 
-  // 実行ロジック (変更なし)
+  // 実行ロジック
   const runOnce = async (tags, radius) => {
     try {
       const q = buildQuery(tags, radius);
       if (!q) return [];
-      const data = await overpassRetry(q); // overpassRetry経由で呼ぶ
+      
+      const data = await overpassRetry(q); 
       const elements = data.elements || [];
       
       const results = [];
@@ -1769,7 +1779,7 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
         const dist = centerLL.distanceTo([ll[0], ll[1]]);
         results.push({ name, lat: ll[0], lon: ll[1], dist, distFromTriggerM: dist, distKm: dist/1000 });
       });
-      // 距離ソートして重複排除
+      
       results.sort((a,b)=>a.dist-b.dist);
       const seen = new Set();
       const uniq = [];
@@ -1779,7 +1789,7 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
       }
       return uniq;
     } catch (err) {
-      console.warn('[Overpass] fetch error, skip radius ' + radius, err);
+      console.warn(`[Overpass] fetch error, skip radius ${radius}`, err);
       return [];
     }
   };
