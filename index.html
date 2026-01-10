@@ -3141,7 +3141,7 @@ async function showLinearComboRoute(row){
 }
 
 /* ==========================================================
-   【修正版】CSV出力用データ蓄積 (ID列も生成)
+   【修正版】CSV出力用データ蓄積 (理想距離を追加)
    ========================================================== */
 function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls, overpassCalls){
   if (!Array.isArray(resultList) || !resultList.length) return;
@@ -3156,6 +3156,9 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
     outputList = sorted.slice(0, 3);
   }
 
+  // ★理想値を取得
+  const ideals = (typeof getIdealPerLegs === 'function') ? getIdealPerLegs() : { idealDistPerLeg: 0 };
+
   outputList.forEach((r, idx)=>{
     const rank = idx + 1;
     const sigmaDist   = stdDev(r.stats?.dist || []);
@@ -3166,10 +3169,8 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
     if (Array.isArray(poiList[0])) poiList = poiList.flat().filter(Boolean);
 
     const poiNames = poiList.map(p => p.name || 'POI').join(' -> ');
+    const poiIds   = poiList.map(p => getPoiId(p)).join(' -> ');
     
-    // ★追加: IDの並び順を作成 (getPoiIdを利用)
-    const poiIds = poiList.map(p => (typeof getPoiId === 'function' ? getPoiId(p) : '?')).join(' -> ');
-
     const poiLatLngs = poiList
       .map(p => `${(p.lat ?? p.latitude)?.toFixed(6)},${(p.lon ?? p.lng ?? p.longitude)?.toFixed(6)}`)
       .join(' | ');
@@ -3189,9 +3190,12 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       timeMs: elapsedMs ?? 0,
       orsCalls: orsCalls ?? 0,
       overpassCalls: overpassCalls ?? 0,
+      
+      // ★保存
+      idealDistKm: ideals.idealDistPerLeg,
 
       poiNames,
-      poiIds,      // ★保存
+      poiIds,
       poiLatLngs
     });
   });
@@ -3264,7 +3268,7 @@ function showAlgoListInPanel(panel, list, algoCode){
 }
   
 /* ==========================================================
-   【修正版】アルゴリズム比較CSVダウンロード (ID列追加)
+   【修正版】アルゴリズム比較CSVダウンロード (理想距離列を追加)
    ========================================================== */
 function downloadAlgoCompareCsv(){
   const rows = window.__algoCompareRows || [];
@@ -3286,8 +3290,9 @@ function downloadAlgoCompareCsv(){
     'time_ms',
     'ors_calls',
     'overpass_calls',
+    'ideal_dist_km',  // ★追加
     'poi_names',
-    'poi_ids',      // ★列追加
+    'poi_ids',
     'poi_latlngs'
   ];
 
@@ -3304,8 +3309,9 @@ function downloadAlgoCompareCsv(){
     r.timeMs ?? '',
     r.orsCalls ?? '',
     r.overpassCalls ?? '',
+    formatNum(r.idealDistKm, 3), // ★出力
     `"${csvEscape(r.poiNames ?? '')}"`,
-    `"${csvEscape(r.poiIds ?? '')}"`,    // ★出力
+    `"${csvEscape(r.poiIds ?? '')}"`,
     `"${csvEscape(r.poiLatLngs ?? '')}"`
   ]);
 
@@ -3459,20 +3465,19 @@ function legEnergyMseCost(energyKj, idealEnergyPerLeg){
 }
 
 /* ==========================================================
-   【修正版】Viterbiエッジ記録 (ID保存対応)
+   【修正版】Viterbiエッジ集約 (理想距離対応)
    ========================================================== */
 function recordViterbiEdge(row){
   if (!window.__collectViterbiEdges) return;
 
   if (!window.__viterbiEdgeAgg) window.__viterbiEdgeAgg = new Map();
 
-  // ★IDをキーに含める (fromId|toId)
   const fromId = row.fromId || 'unknown';
   const toId   = row.toId   || 'unknown';
   const key = `${fromId}|${toId}`;
 
   const cur = window.__viterbiEdgeAgg.get(key) || {
-    fromId, toId, // ★ID保存
+    fromId, toId,
     fromName: row.fromName || '',
     toName:   row.toName   || '',
     count: 0,
@@ -3480,8 +3485,13 @@ function recordViterbiEdge(row){
     sumDistKm: 0,
     sumTimeMin: 0,
     sumCost: 0,
-    idealEnergyKj: row.idealEnergyKj
+    idealEnergyKj: row.idealEnergyKj,
+    // ★追加
+    idealDistKm: row.distKm ? (getIdealPerLegs().idealDistPerLeg) : 0 
   };
+  // ※ recordViterbiEdge は solveViterbiGeneric から呼ばれるため、
+  //    そこで渡される row に idealEnergyKj はあるが idealDistKm がない場合がある。
+  //    念のため getIdealPerLegs() で補完。
 
   cur.count += 1;
   if (Number.isFinite(row.energyKj)) cur.sumEnergyKj += row.energyKj;
@@ -3899,17 +3909,17 @@ function formatNum(x, digits=3){
 }
 
 /* ==========================================================
-   【修正版】Viterbiエッジ CSVダウンロード
-   ※From_ID, To_ID を列の先頭に追加して出力します
+   【修正版】Viterbiエッジ(集約) CSVダウンロード (理想距離列を追加)
+   ※downloadViterbiEdgesCsv: 集約用
    ========================================================== */
 function downloadViterbiEdgesCsv(){
-  // Mapから最新リストを再生成（ID情報を含めて）
   if (window.__viterbiEdgeAgg) {
+    // Mapから最新リストを再生成
     window.__viterbiAllEdgeRows = Array.from(window.__viterbiEdgeAgg.values()).map(x => {
       const n = Math.max(1, x.count);
       return {
-        fromId: x.fromId, // ★ID
-        toId:   x.toId,   // ★ID
+        fromId: x.fromId,
+        toId:   x.toId,
         fromName: x.fromName,
         toName: x.toName,
         count: x.count,
@@ -3917,45 +3927,47 @@ function downloadViterbiEdgesCsv(){
         distKm: x.sumDistKm / n,
         timeMin: x.sumTimeMin / n,
         cost: x.sumCost / n,
-        idealEnergyKj: x.idealEnergyKj
+        idealEnergyKj: x.idealEnergyKj,
+        idealDistKm: x.idealDistKm // ★
       };
     });
   }
   
   const rows = window.__viterbiAllEdgeRows || [];
   if (!rows.length){
-    alert('Viterbiのエッジログがありません。先にアルゴリズムを実行してください。');
+    alert('Viterbiのエッジログがありません。');
     return;
   }
 
   const esc = s => String(s ?? '').replace(/"/g,'""');
 
-  // ★ヘッダーの先頭にID列を追加
   const header = [
     'from_id', 'to_id', 
     'from_name', 'to_name',
     'count',
     'energy_kJ',
-    'ideal_energy_kJ',
     'dist_km',
     'time_min',
-    'cost'
+    'cost',
+    'ideal_dist_km',   // ★追加
+    'ideal_energy_kJ'
   ];
 
   const lines = [header.join(',')];
 
   for (const r of rows){
     lines.push([
-      r.fromId ?? '', // ★ID出力
-      r.toId   ?? '', // ★ID出力
+      r.fromId ?? '',
+      r.toId   ?? '',
       `"${esc(r.fromName)}"`,
       `"${esc(r.toName)}"`,
       r.count ?? 1,
       formatNum(r.energyKj, 2),
-      formatNum(r.idealEnergyKj, 2),
       formatNum(r.distKm, 3),
       formatNum(r.timeMin, 2),
-      formatNum(r.cost, 3)
+      formatNum(r.cost, 3),
+      formatNum(r.idealDistKm, 3),   // ★出力
+      formatNum(r.idealEnergyKj, 2)
     ].join(','));
   }
 
@@ -3965,7 +3977,7 @@ function downloadViterbiEdgesCsv(){
 
   const a = document.createElement('a');
   a.href = url;
-  a.download = `viterbi_edges_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`;
+  a.download = `viterbi_edges_agg_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -4102,6 +4114,10 @@ function renderViterbiLog() {
 }
 
 // 3. CSVダウンロード関数
+/* ==========================================================
+   【修正版】Viterbiログ CSVダウンロード (理想距離列を追加)
+   ※downloadViterbiLogCsv: 生ログ用
+   ========================================================== */
 function downloadViterbiLogCsv() {
   const rows = window.__viterbiAllEdgeRows || [];
   if (!rows.length) {
@@ -4109,13 +4125,22 @@ function downloadViterbiLogCsv() {
     return;
   }
 
-  // BOM付きCSVを作成
-  const header = ['From_Name', 'To_Name', 'Dist_km', 'Time_min', 'Energy_kJ', 'Cost', 'Exec_ms', 'Status', 'Error_Msg'];
+  const header = [
+    'From_ID', 'To_ID', 
+    'From_Name', 'To_Name', 
+    'Dist_km', 'Time_min', 'Energy_kJ', 'Cost', 
+    'Exec_ms', 'Status', 'Error_Msg',
+    'Ideal_Dist_km',   // ★追加
+    'Ideal_Energy_kJ'  // ★追加
+  ];
+  
   const csvLines = [header.join(',')];
 
   rows.forEach(r => {
     const esc = (s) => `"${String(s || '').replace(/"/g, '""')}"`;
     const line = [
+      esc(r.fromId),
+      esc(r.toId),
       esc(r.fromName),
       esc(r.toName),
       r.distKm ?? '',
@@ -4124,7 +4149,9 @@ function downloadViterbiLogCsv() {
       r.cost ?? '',
       r.ms ?? '',
       r.ok ? 'OK' : 'Error',
-      esc(r.errMsg)
+      esc(r.errMsg),
+      formatNum(r.idealDistKm, 3),   // ★出力
+      formatNum(r.idealEnergyKj, 2)  // ★出力
     ];
     csvLines.push(line.join(','));
   });
@@ -4135,7 +4162,7 @@ function downloadViterbiLogCsv() {
   
   const a = document.createElement('a');
   a.href = url;
-  a.download = `viterbi_edges_${new Date().toISOString().slice(0,19).replace(/[-:T]/g,'')}.csv`;
+  a.download = `viterbi_edges_raw_${new Date().toISOString().slice(0,19).replace(/[-:T]/g,'')}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -5055,6 +5082,9 @@ function downloadAlgoCompareCsv(){
 }
 
 // 4. Edge(Viterbi)用: API呼び出し＆IDログ記録
+/* ==========================================================
+   【修正版】API呼び出し＆ログ記録 (理想距離対応)
+   ========================================================== */
 async function calcLegCostWithApi(from, to, profile){
   if (!from || !to) throw new Error('calcLegCostWithApi: from/to が不正です');
 
@@ -5065,7 +5095,6 @@ async function calcLegCostWithApi(from, to, profile){
   const toLat   = to.lat   ?? to.latitude   ?? to.y;
   const toLon   = to.lon   ?? to.lng ?? to.longitude   ?? to.x;
 
-  // ★IDと名前を取得
   const fromId   = getPoiId(from);
   const toId     = getPoiId(to);
   const fromName = from.name || from.label || `(${fromId})`;
@@ -5078,6 +5107,9 @@ async function calcLegCostWithApi(from, to, profile){
 
   const wps = [ { lat: fromLat, lon: fromLon }, { lat: toLat, lon: toLon } ];
 
+  // ★理想値取得
+  const ideals = (typeof getIdealPerLegs === 'function') ? getIdealPerLegs() : { idealDistPerLeg: 0, idealEnergyPerLeg: 0 };
+
   try {
     const out = await routeLegStatsForWaypoints(wps, profile);
     const summary = out?.feature?.properties?.summary || {};
@@ -5085,7 +5117,6 @@ async function calcLegCostWithApi(from, to, profile){
     const distKm  = (Number(summary.distance) || 0) / 1000;
     const timeMin = (Number(summary.duration) || 0) / 60;
     
-    // エネルギー取得
     const ene = out?.stats?.energy ?? out?.stats?.E ?? null;
     let energyKj = 0;
     if (Array.isArray(ene) && ene.length) {
@@ -5095,18 +5126,20 @@ async function calcLegCostWithApi(from, to, profile){
       energyKj = Number(ene);
     }
 
-    // ★ログ配列にID付きで記録
     if (window.__collectViterbiEdges) {
       window.__viterbiAllEdgeRows = window.__viterbiAllEdgeRows || [];
       window.__viterbiAllEdgeRows.push({
-        fromId, toId,       // ★ID保存
+        fromId, toId,
         fromName, toName,
         fromLat, fromLon, toLat, toLon,
         distKm, timeMin, energyKj,
         profile,
         ms: Math.round(performance.now() - t0),
         ok: true,
-        errMsg: ''
+        errMsg: '',
+        // ★保存
+        idealDistKm: ideals.idealDistPerLeg,
+        idealEnergyKj: ideals.idealEnergyPerLeg
       });
     }
 
@@ -5116,14 +5149,17 @@ async function calcLegCostWithApi(from, to, profile){
     if (window.__collectViterbiEdges) {
       window.__viterbiAllEdgeRows = window.__viterbiAllEdgeRows || [];
       window.__viterbiAllEdgeRows.push({
-        fromId, toId,       // ★エラー時もID保存
+        fromId, toId,
         fromName, toName,
         fromLat, fromLon, toLat, toLon,
         distKm: '', timeMin: '', energyKj: '',
         profile,
         ms: Math.round(performance.now() - t0),
         ok: false,
-        errMsg: String(e?.message || e)
+        errMsg: String(e?.message || e),
+        // ★保存
+        idealDistKm: ideals.idealDistPerLeg,
+        idealEnergyKj: ideals.idealEnergyPerLeg
       });
     }
     throw e;
