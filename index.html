@@ -1444,12 +1444,13 @@ async function totalEnergyKJ(feature,mass,flat){
   return tot;
 }
 /* ==========================================================
-   【修正版】休憩トリガー生成 (NaN対策 & ログ修正済み)
+   【修正版】休憩トリガー生成
+   ※配列外参照(-1番目)を防ぐガード処理を追加したバージョン
    ========================================================== */
 async function makeRestPoints(feature, mass, flat) {
   const coords = feature.geometry.coordinates;
-  const totalD = feature.properties.summary.distance || 0; // m
-  const totalE = await totalEnergyKJ(feature, mass, flat); // kJ
+  const totalD = feature.properties.summary.distance || 0; 
+  const totalE = await totalEnergyKJ(feature, mass, flat); 
 
   const cumDist = [0];
   for(let i=1; i<coords.length; i++){
@@ -1460,8 +1461,8 @@ async function makeRestPoints(feature, mass, flat) {
   const mode = document.querySelector('input[name="restMode"]:checked')?.value || 'auto_unit';
   let triggerDistancesM = [];
 
+  // --- モード分岐 ---
   if (mode === 'interval') {
-    // 距離固定モード
     const intervalKm = parseFloat(document.getElementById('restInterval').value) || 20;
     const intervalM = intervalKm * 1000;
     for (let d = intervalM; d < totalD - 500; d += intervalM) {
@@ -1470,28 +1471,22 @@ async function makeRestPoints(feature, mass, flat) {
     logRest(`[基本] 距離固定: ${intervalKm}kmごと → ${triggerDistancesM.length}箇所`);
 
   } else {
-    // 回数指定 or 自動計算
     let count = 0;
-    
     if (mode === 'count') {
       count = parseInt(document.getElementById('restCount').value) || 3;
       logRest(`[基本] 回数指定: ${count}回 → 等間隔配置`);
     } else {
-      // ★自動計算（区間数ベース）
+      // 自動計算（区間数ベース）
       const totalKm = totalD / 1000;
       const unitVal = parseFloat(document.getElementById('autoUnitValue')?.value) || 20;
-      
-      // 区間数の目安
       const rawSegments = (unitVal > 0) ? (totalKm / unitVal) : 0;
       
-      // 実際の休憩回数を計算
       count = (typeof calcAutoTriggerCount === 'function') 
               ? calcAutoTriggerCount(totalKm) 
               : Math.max(1, Math.round(rawSegments) - 1);
       
       const actualSegments = count + 1;
       const actualInterval = totalKm / actualSegments;
-
       logRest(`[基本] 自動計算: ${totalKm.toFixed(1)}km / ${unitVal}km = ${rawSegments.toFixed(1)}区間`);
       logRest(`      ↳ ${actualSegments}区間 (休憩${count}回) / 約${actualInterval.toFixed(1)}km間隔`);
     }
@@ -1504,14 +1499,14 @@ async function makeRestPoints(feature, mass, flat) {
     }
   }
 
-  // --- 追加トリガー (割合・統計) ---
+  // --- 追加トリガー ---
   if (document.getElementById('optPercentTrigger')?.checked) {
     const step = parseFloat(document.getElementById('percentStep').value) || 25;
     const metric = document.getElementById('percentMetric').value || 'distance';
     let added = 0;
     for (let p = step; p < 100; p += step) {
       const ratio = p / 100.0;
-      let targetM = (metric === 'distance') ? totalD * ratio : totalD * ratio;
+      let targetM = totalD * ratio;
       if (targetM > 500 && targetM < totalD - 500) {
         triggerDistancesM.push(targetM);
         added++;
@@ -1531,7 +1526,7 @@ async function makeRestPoints(feature, mass, flat) {
     if(added > 0) logRest(`[追加] 統計トリガー (平均${meanKm}km) → +${added}箇所`);
   }
 
-  // --- 統合・ソート・近接除去 ---
+  // --- 統合・ソート ---
   triggerDistancesM.sort((a, b) => a - b);
   const uniqueDistances = [];
   if (triggerDistancesM.length > 0) {
@@ -1543,7 +1538,7 @@ async function makeRestPoints(feature, mass, flat) {
     }
   }
 
-  // --- 座標特定 & スキップ判定 (NaN対策済み) ---
+  // --- 座標特定 & スキップ判定 ---
   const results = [];
   const skipGoalOn = document.getElementById('skipNearGoalToggle')?.checked;
   const skipNodeOn = document.getElementById('skipNearNodeToggle')?.checked;
@@ -1562,11 +1557,14 @@ async function makeRestPoints(feature, mass, flat) {
       continue;
     }
 
-    // ★座標特定（安全化：インデックス0参照回避）
+    // ★★★ ここが最重要修正ポイント ★★★
+    // 以前のコードでは idx が 0 になることがあり、その場合 idx-1 が -1 になって
+    // 座標が NaN (エラー) になっていました。
     let idx = cumDist.findIndex(d => d >= distM);
-    if (idx < 1) idx = 1; 
+    if (idx < 1) idx = 1;  // 最低でも1にする（これで -1 参照を防ぐ）
     if (idx >= cumDist.length) idx = cumDist.length - 1;
     
+    // 補間計算
     const prevD = cumDist[idx-1];
     const nextD = cumDist[idx];
     const segmentLen = nextD - prevD;
@@ -1575,7 +1573,7 @@ async function makeRestPoints(feature, mass, flat) {
 
     if (segmentLen > 0) {
       const ratio = (distM - prevD) / segmentLen;
-      const prevLat = coords[idx-1][1];
+      const prevLat = coords[idx-1][1]; // idx>=1 なので安全
       const prevLon = coords[idx-1][0];
       
       // NaNチェック
@@ -1703,16 +1701,14 @@ async function overpassQuery(query) {
 }
 
 /* ==========================================================
-   【修正版】POI検索 (座標バリデーション & 半径制限強化)
-   ※この関数を上書きしてください
+   【修正版】POI検索 (座標バリデーション強化版)
    ========================================================== */
 async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
-  // ▼▼▼ 追加: これがないと計算ミス時に400エラーになります ▼▼▼
-  if (!Number.isFinite(latRaw) || !Number.isFinite(lonRaw)) {
-    console.error('[fetchPoisAround] Invalid coordinates (NaN):', latRaw, lonRaw);
-    return []; // 不正な座標なら検索せず、空リストを返して終了
+  // ★追加: 座標チェック（NaNに加え、範囲外の異常値も弾く）
+  if (!Number.isFinite(latRaw) || !Number.isFinite(lonRaw) || Math.abs(latRaw) > 90) {
+    console.error('[fetchPoisAround] Invalid coordinates detected:', latRaw, lonRaw);
+    return []; // ここで空を返すことで 400 Bad Request を完全に防ぐ
   }
-  // ▲▲▲ 追加ここまで ▲▲▲
 
   const round6 = v => Math.round(Number(v) * 1e6) / 1e6;
   const lat = round6(latRaw), lon = round6(lonRaw);
@@ -1767,7 +1763,6 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     try {
       const q = buildQuery(tags, radius);
       if (!q) return [];
-      
       const data = await overpassRetry(q); 
       const elements = data.elements || [];
       
@@ -1779,7 +1774,6 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
         const dist = centerLL.distanceTo([ll[0], ll[1]]);
         results.push({ name, lat: ll[0], lon: ll[1], dist, distFromTriggerM: dist, distKm: dist/1000 });
       });
-      
       results.sort((a,b)=>a.dist-b.dist);
       const seen = new Set();
       const uniq = [];
