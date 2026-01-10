@@ -1435,7 +1435,7 @@ async function totalEnergyKJ(feature,mass,flat){
 }
 /* ==========================================================
    【修正版】休憩トリガー生成 (makeRestPoints)
-   ご希望の「計算した回数で等分（等間隔）にする」ロジックを強化
+   ログ表示変更: 自動計算の過程（小数値）を表示するように改良
    ========================================================== */
 async function makeRestPoints(feature, mass, flat) {
   const coords = feature.geometry.coordinates;
@@ -1456,37 +1456,40 @@ async function makeRestPoints(feature, mass, flat) {
   const mode = document.querySelector('input[name="restMode"]:checked')?.value || 'auto_unit';
   let triggerDistancesM = [];
 
-  // ★ここが分岐点です
   if (mode === 'interval') {
-    // 【A: 距離固定モード】 20, 40, 60... (余りが出る)
+    // 【A: 距離固定モード】
     const intervalKm = parseFloat(document.getElementById('restInterval').value) || 20;
     const intervalM = intervalKm * 1000;
     for (let d = intervalM; d < totalD - 500; d += intervalM) {
       triggerDistancesM.push(d);
     }
-    logRest(`[基本] 距離固定: ${intervalKm}kmごと → ${triggerDistancesM.length}箇所 (固定配置)`);
+    logRest(`[基本] 距離固定: ${intervalKm}kmごと → ${triggerDistancesM.length}箇所`);
 
   } else {
-    // 【B: 回数指定】または【C: 自動計算】 → 等間隔 (割り切る)
+    // 【B: 回数指定】または【C: 自動計算】
     let count = 0;
     
     if (mode === 'count') {
       count = parseInt(document.getElementById('restCount').value) || 3;
       logRest(`[基本] 回数指定: ${count}回 → 等間隔配置`);
     } else {
-      // 自動計算: 全長 / 基準 = 回数
+      // 【C: 自動計算】
       const totalKm = totalD / 1000;
-      // グローバルの計算関数を利用
+      const unitVal = parseFloat(document.getElementById('autoUnitValue')?.value) || 20;
+      
+      // 計算過程（生の値）
+      const raw = (unitVal > 0) ? (totalKm / unitVal) : 0;
+
+      // グローバルの計算関数を利用して丸める
       count = (typeof calcAutoTriggerCount === 'function') 
               ? calcAutoTriggerCount(totalKm) 
-              : 3;
+              : Math.round(raw);
       
-      const unitVal = parseFloat(document.getElementById('autoUnitValue')?.value) || 20;
-      logRest(`[基本] 自動計算: ${totalKm.toFixed(1)}km / ${unitVal}km = ${count}回 → 等間隔配置`);
+      // ★ログ変更箇所: 生の計算値(raw)を小数第1位まで表示
+      logRest(`[基本] 自動計算: ${totalKm.toFixed(1)}km / ${unitVal}km = ${raw.toFixed(1)} → ${count}回 (等間隔)`);
     }
 
-    // ★ここで「全体 / (回数+1)」をして等間隔にする
-    // 例: 全長60kmで2回休憩なら、3分割して 20km, 40km 地点
+    // 等間隔に配置
     if (count > 0) {
       const legM = totalD / (count + 1);
       for (let i = 1; i <= count; i++) {
@@ -1509,8 +1512,7 @@ async function makeRestPoints(feature, mass, flat) {
       if (metric === 'distance') {
         targetM = totalD * ratio;
       } else {
-        // 時間/エネルギーの場合は簡易的に距離比例
-        targetM = totalD * ratio;
+        targetM = totalD * ratio; // 簡易近似
       }
       
       if (targetM > 500 && targetM < totalD - 500) {
@@ -1540,7 +1542,6 @@ async function makeRestPoints(feature, mass, flat) {
   if (triggerDistancesM.length > 0) {
     uniqueDistances.push(triggerDistancesM[0]);
     for (let i = 1; i < triggerDistancesM.length; i++) {
-      // 500m以上離れていれば採用
       if (triggerDistancesM[i] - uniqueDistances[uniqueDistances.length-1] > 500) {
         uniqueDistances.push(triggerDistancesM[i]);
       }
