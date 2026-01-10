@@ -1704,14 +1704,15 @@ async function overpassQuery(query) {
 
 /* ==========================================================
    【修正版】POI検索 (座標バリデーション & 半径制限強化)
+   ※この関数を上書きしてください
    ========================================================== */
 async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
-  // ★追加: 座標が数値でない場合は即座に空を返す（400エラー防止）
-  // これがないと、計算ミスの NaN がそのまま API に飛んでエラーになります
+  // ▼▼▼ 追加: これがないと計算ミス時に400エラーになります ▼▼▼
   if (!Number.isFinite(latRaw) || !Number.isFinite(lonRaw)) {
-    console.error('[fetchPoisAround] Invalid coordinates:', latRaw, lonRaw);
-    return [];
+    console.error('[fetchPoisAround] Invalid coordinates (NaN):', latRaw, lonRaw);
+    return []; // 不正な座標なら検索せず、空リストを返して終了
   }
+  // ▲▲▲ 追加ここまで ▲▲▲
 
   const round6 = v => Math.round(Number(v) * 1e6) / 1e6;
   const lat = round6(latRaw), lon = round6(lonRaw);
@@ -1754,7 +1755,6 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
       if (k === 'amenity' && values.includes('vending_machine')) {
         clauses.push(`node(around:${radius},${lat},${lon})["amenity"="vending_machine"]`);
       }
-      // 正規表現クエリの生成
       const re = '(' + values.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')';
       clauses.push(`node(around:${radius},${lat},${lon})["${k}"~"${re}"]`);
       clauses.push(`way(around:${radius},${lat},${lon})["${k}"~"${re}"]`);
