@@ -2373,6 +2373,10 @@ function buildLinearAlgoRows(start, goal, groups, hardCap = 200000) {
   return rows;
 }
 
+/* ==========================================================
+   【修正版】API呼び出し＆ログ記録 (ID記録対応)
+   ※ここでIDを保存しないと、CSV出力時に空欄になってしまいます
+   ========================================================== */
 async function calcLegCostWithApi(from, to, profile){
   if (!from || !to) throw new Error('calcLegCostWithApi: from/to が不正です');
 
@@ -2383,30 +2387,16 @@ async function calcLegCostWithApi(from, to, profile){
   const toLat   = to.lat   ?? to.latitude   ?? to.y;
   const toLon   = to.lon   ?? to.lng ?? to.longitude   ?? to.x;
 
-  // ★座標バリデーション（重要）
+  // ★IDと名前を取得 (getPoiId関数を利用)
+  const fromId   = (typeof getPoiId === 'function') ? getPoiId(from) : 'unknown';
+  const toId     = (typeof getPoiId === 'function') ? getPoiId(to)   : 'unknown';
+  const fromName = from.name || from.label || `(${fromId})`;
+  const toName   = to.name   || to.label   || `(${toId})`;
+
   if (!Number.isFinite(fromLat) || !Number.isFinite(fromLon) ||
       !Number.isFinite(toLat)   || !Number.isFinite(toLon)) {
-    const msg = `calcLegCostWithApi: lat/lon が不正 from(${fromLat},${fromLon}) to(${toLat},${toLon})`;
-    if (window.__collectViterbiEdges) {
-      window.__viterbiAllEdgeRows = window.__viterbiAllEdgeRows || [];
-      window.__viterbiAllEdgeRows.push({
-        fromName: 'INVALID', toName: 'INVALID',
-        fromLat, fromLon, toLat, toLon,
-        distKm:'', timeMin:'', energyKj:'',
-        profile,
-        ms: Math.round(performance.now() - t0),
-        ok:false,
-        errMsg: msg
-      });
-    }
-    throw new Error(msg);
+    throw new Error(`Invalid LatLon: ${fromId} -> ${toId}`);
   }
-
-  const short = (lat,lon)=> `${Number(lat).toFixed(5)},${Number(lon).toFixed(5)}`;
-  const fromName = (from.name || from.label) ? (from.name || from.label)
-                : (from.type ? `${from.type}(${short(fromLat,fromLon)})` : `FROM(${short(fromLat,fromLon)})`);
-  const toName   = (to.name || to.label) ? (to.name || to.label)
-                : (to.type ? `${to.type}(${short(toLat,toLon)})` : `TO(${short(toLat,toLon)})`);
 
   const wps = [ { lat: fromLat, lon: fromLon }, { lat: toLat, lon: toLon } ];
 
@@ -2416,38 +2406,25 @@ async function calcLegCostWithApi(from, to, profile){
 
     const distKm  = (Number(summary.distance) || 0) / 1000;
     const timeMin = (Number(summary.duration) || 0) / 60;
+    
+    // エネルギー取得
+    const ene = out?.stats?.energy ?? out?.stats?.E ?? null;
+    let energyKj = 0;
+    if (Array.isArray(ene) && ene.length) {
+      const last = Number(ene[ene.length - 1]);
+      energyKj = (Number.isFinite(last) && last > 0) ? last : sumNums(ene);
+    } else if (Number.isFinite(Number(ene))) {
+      energyKj = Number(ene);
+    }
 
-    // --- energy 抽出（返り値の揺れを吸収） ---
-const ene =
-  out?.stats?.energy ??   // 期待形（区間配列 or 累積配列）
-  out?.stats?.E ??        // 別名候補
-  out?.stats?.cumE ??     // 別名候補
-  null;
-
-let energyKj = 0;
-
-// 1) 配列なら「累積っぽい→末尾」「区間っぽい→sum」どっちでも破綻しないようにする
-if (Array.isArray(ene) && ene.length) {
-  const last = Number(ene[ene.length - 1]);
-  if (Number.isFinite(last) && last > 0) {
-    energyKj = last;           // 累積配列なら末尾が総量
-  } else {
-    energyKj = sumNums(ene);   // 区間配列なら合計
-  }
-// 2) 単発の数値で返ってきた場合
-} else if (Number.isFinite(Number(ene))) {
-  energyKj = Number(ene);
-// 3) それ以外は0
-} else {
-  energyKj = 0;
-}
-
+    // ★ログ配列にID付きで記録
     if (window.__collectViterbiEdges) {
       window.__viterbiAllEdgeRows = window.__viterbiAllEdgeRows || [];
       window.__viterbiAllEdgeRows.push({
+        fromId, toId,       // ★IDを保存
         fromName, toName,
         fromLat, fromLon, toLat, toLon,
-        distKm, timeMin, energyKj,      // ★ここ統一！
+        distKm, timeMin, energyKj,
         profile,
         ms: Math.round(performance.now() - t0),
         ok: true,
@@ -2461,9 +2438,10 @@ if (Array.isArray(ene) && ene.length) {
     if (window.__collectViterbiEdges) {
       window.__viterbiAllEdgeRows = window.__viterbiAllEdgeRows || [];
       window.__viterbiAllEdgeRows.push({
+        fromId, toId,       // ★エラー時もID保存
         fromName, toName,
         fromLat, fromLon, toLat, toLon,
-        distKm: '', timeMin: '', energyKj: '', // ★ここも統一！
+        distKm: '', timeMin: '', energyKj: '',
         profile,
         ms: Math.round(performance.now() - t0),
         ok: false,
@@ -3922,10 +3900,10 @@ function formatNum(x, digits=3){
 
 /* ==========================================================
    【修正版】Viterbiエッジ CSVダウンロード
-   ※From_ID, To_ID を列の先頭に追加
+   ※From_ID, To_ID を列の先頭に追加して出力します
    ========================================================== */
 function downloadViterbiEdgesCsv(){
-  // Mapから最新リストを再生成
+  // Mapから最新リストを再生成（ID情報を含めて）
   if (window.__viterbiEdgeAgg) {
     window.__viterbiAllEdgeRows = Array.from(window.__viterbiEdgeAgg.values()).map(x => {
       const n = Math.max(1, x.count);
@@ -3946,13 +3924,13 @@ function downloadViterbiEdgesCsv(){
   
   const rows = window.__viterbiAllEdgeRows || [];
   if (!rows.length){
-    alert('Viterbiのエッジログがありません。');
+    alert('Viterbiのエッジログがありません。先にアルゴリズムを実行してください。');
     return;
   }
 
   const esc = s => String(s ?? '').replace(/"/g,'""');
 
-  // ★ヘッダーにIDを追加
+  // ★ヘッダーの先頭にID列を追加
   const header = [
     'from_id', 'to_id', 
     'from_name', 'to_name',
@@ -3994,6 +3972,8 @@ function downloadViterbiEdgesCsv(){
   URL.revokeObjectURL(url);
 }
 
+// 古い関数名で呼んでいる場合の互換性維持
+window.downloadViterbiLogCsv = downloadViterbiEdgesCsv;
 function bindViterbiEdgeUi(){
   const btnShow = document.getElementById('btnShowViterbiEdges');
   const btnHide = document.getElementById('btnHideViterbiEdges');
