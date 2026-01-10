@@ -1701,19 +1701,26 @@ async function overpassQuery(query) {
 }
 
 /* ==========================================================
-   【修正2】POI検索 (NaN完全ガード)
-   ※既存の fetchPoisAround をこれで上書き
+   【最終修正版】POI検索 (エラー即時中断・完全ガード)
+   ※この関数を fetchPoisAround に上書きしてください
    ========================================================== */
 async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
-  // ★重要: ここでNaNを弾く
-  if (!Number.isFinite(latRaw) || !Number.isFinite(lonRaw)) {
-    console.error('[fetchPoisAround] 座標が不正(NaN)なためスキップしました:', latRaw, lonRaw);
-    return []; // 空配列を返して終了（エラーにはしない）
+  // 1. 入力値の完全チェック
+  const lat = Number(latRaw);
+  const lon = Number(lonRaw);
+  const rad = Number(baseRadius);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    console.error(`[fetchPoisAround] 座標エラー (NaN): lat=${latRaw}, lon=${lonRaw}`);
+    return []; // 即終了
+  }
+  if (!Number.isFinite(rad) || rad <= 0) {
+    console.error(`[fetchPoisAround] 半径エラー: radius=${baseRadius}`);
+    return []; // 即終了
   }
 
-  const round6 = v => Math.round(Number(v) * 1e6) / 1e6;
-  const lat = round6(latRaw), lon = round6(lonRaw);
-  const centerLL = L.latLng(lat, lon);
+  const round6 = v => Math.round(v * 1e6) / 1e6;
+  const centerLL = L.latLng(round6(lat), round6(lon));
   const limitN = Math.max(1, Number(limit) || 5);
 
   const useConvenience = document.getElementById('chkConvenience')?.checked ?? true;
@@ -1730,8 +1737,9 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     ['amenity','toilets'], ['amenity','bench'], ['amenity','vending_machine']
   ];
 
+  // 半径ステップ (最大10km)
   const radiusSteps = (() => {
-    const base = Math.max(100, Number(baseRadius) || 500); 
+    const base = Math.max(100, rad); 
     const steps = [1000, 3000, 5000, 10000]; 
     const s = [base, ...steps].filter((v, i, a) => a.indexOf(v) === i && v >= base).sort((a,b)=>a-b);
     return s;
@@ -1757,13 +1765,16 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     return `[out:json][timeout:25];(${clauses.join(';')});out center;`;
   };
 
+  // 実行ロジック
   const runOnce = async (tags, radius) => {
     try {
       const q = buildQuery(tags, radius);
       if (!q) return [];
+      
       const data = await overpassRetry(q); 
       const elements = data.elements || [];
       const results = [];
+      
       elements.forEach(e => {
         const ll = e.type === 'node' ? [e.lat, e.lon] : (e.center ? [e.center.lat, e.center.lon] : null);
         if (!ll) return;
@@ -1771,6 +1782,7 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
         const dist = centerLL.distanceTo([ll[0], ll[1]]);
         results.push({ name, lat: ll[0], lon: ll[1], dist, distFromTriggerM: dist, distKm: dist/1000 });
       });
+      
       results.sort((a,b)=>a.dist-b.dist);
       const seen = new Set();
       const uniq = [];
@@ -1779,26 +1791,43 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
           if(!seen.has(k)){ seen.add(k); uniq.push(p); }
       }
       return uniq;
+
     } catch (err) {
-      console.warn(`[Overpass] fetch error at radius ${radius}:`, err);
-      return [];
+      console.warn(`[Overpass] Fatal error at radius ${radius}. Stopping search.`, err);
+      return null; // ★nullを返す＝致命的エラーの合図
     }
   };
 
+  // 検索ループ (エラーが出たら即break)
   let picked = [];
+  
+  // 1. Primary Tags
   for (const r of radiusSteps) {
     const res = await runOnce(PRIMARY_TAGS, r);
-    if (res.length >= limitN) { picked = res.slice(0, limitN); break; }
+    if (res === null) return []; // ★致命的エラーなら即終了
+    
+    if (res.length >= limitN) {
+      picked = res.slice(0, limitN);
+      break;
+    }
     if (res.length > picked.length) picked = res;
   }
+
+  // 2. Extra Tags (Primaryで不足時のみ)
   if (picked.length < limitN) {
     const MERGED = [...PRIMARY_TAGS, ...EXTRA_TAGS];
     for (const r of radiusSteps) {
       const res = await runOnce(MERGED, r);
-      if (res.length >= limitN) { picked = res.slice(0, limitN); break; }
+      if (res === null) return []; // ★致命的エラーなら即終了
+
+      if (res.length >= limitN) {
+        picked = res.slice(0, limitN);
+        break;
+      }
       if (res.length > picked.length) picked = res;
     }
   }
+
   return picked.slice(0, limitN);
 }
 /* ===== 小ユーティリティ ===== */
