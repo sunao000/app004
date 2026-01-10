@@ -3191,7 +3191,7 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       orsCalls: orsCalls ?? 0,
       overpassCalls: overpassCalls ?? 0,
       
-      // ★保存
+      // ★保存 (ここが抜けていました)
       idealDistKm: ideals.idealDistPerLeg,
 
       poiNames,
@@ -3309,7 +3309,7 @@ function downloadAlgoCompareCsv(){
     r.timeMs ?? '',
     r.orsCalls ?? '',
     r.overpassCalls ?? '',
-    formatNum(r.idealDistKm, 3), // ★出力
+    formatNum(r.idealDistKm, 3), // ★出力 (ここが抜けていました)
     `"${csvEscape(r.poiNames ?? '')}"`,
     `"${csvEscape(r.poiIds ?? '')}"`,
     `"${csvEscape(r.poiLatLngs ?? '')}"`
@@ -4116,7 +4116,6 @@ function renderViterbiLog() {
 // 3. CSVダウンロード関数
 /* ==========================================================
    【修正版】Viterbiログ CSVダウンロード (理想距離列を追加)
-   ※downloadViterbiLogCsv: 生ログ用
    ========================================================== */
 function downloadViterbiLogCsv() {
   const rows = window.__viterbiAllEdgeRows || [];
@@ -4125,6 +4124,7 @@ function downloadViterbiLogCsv() {
     return;
   }
 
+  // ★ヘッダーに Ideal_Dist_km を追加
   const header = [
     'From_ID', 'To_ID', 
     'From_Name', 'To_Name', 
@@ -4150,8 +4150,8 @@ function downloadViterbiLogCsv() {
       r.ms ?? '',
       r.ok ? 'OK' : 'Error',
       esc(r.errMsg),
-      formatNum(r.idealDistKm, 3),   // ★出力
-      formatNum(r.idealEnergyKj, 2)  // ★出力
+      formatNum(r.idealDistKm, 3),   // ★出力 (ここが抜けていました)
+      formatNum(r.idealEnergyKj, 2)
     ];
     csvLines.push(line.join(','));
   });
@@ -4162,7 +4162,7 @@ function downloadViterbiLogCsv() {
   
   const a = document.createElement('a');
   a.href = url;
-  a.download = `viterbi_edges_raw_${new Date().toISOString().slice(0,19).replace(/[-:T]/g,'')}.csv`;
+  a.download = `viterbi_edges_${new Date().toISOString().slice(0,19).replace(/[-:T]/g,'')}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
