@@ -1444,8 +1444,8 @@ async function totalEnergyKJ(feature,mass,flat){
   return tot;
 }
 /* ==========================================================
-   【修正版】休憩トリガー生成
-   ※配列外参照(-1番目)を防ぐガード処理を追加したバージョン
+   【修正3】休憩トリガー生成 (計算バグ修正)
+   ※既存の makeRestPoints をこれで上書き
    ========================================================== */
 async function makeRestPoints(feature, mass, flat) {
   const coords = feature.geometry.coordinates;
@@ -1461,7 +1461,6 @@ async function makeRestPoints(feature, mass, flat) {
   const mode = document.querySelector('input[name="restMode"]:checked')?.value || 'auto_unit';
   let triggerDistancesM = [];
 
-  // --- モード分岐 ---
   if (mode === 'interval') {
     const intervalKm = parseFloat(document.getElementById('restInterval').value) || 20;
     const intervalM = intervalKm * 1000;
@@ -1469,14 +1468,12 @@ async function makeRestPoints(feature, mass, flat) {
       triggerDistancesM.push(d);
     }
     logRest(`[基本] 距離固定: ${intervalKm}kmごと → ${triggerDistancesM.length}箇所`);
-
   } else {
     let count = 0;
     if (mode === 'count') {
       count = parseInt(document.getElementById('restCount').value) || 3;
       logRest(`[基本] 回数指定: ${count}回 → 等間隔配置`);
     } else {
-      // 自動計算（区間数ベース）
       const totalKm = totalD / 1000;
       const unitVal = parseFloat(document.getElementById('autoUnitValue')?.value) || 20;
       const rawSegments = (unitVal > 0) ? (totalKm / unitVal) : 0;
@@ -1557,11 +1554,9 @@ async function makeRestPoints(feature, mass, flat) {
       continue;
     }
 
-    // ★★★ ここが最重要修正ポイント ★★★
-    // 以前のコードでは idx が 0 になることがあり、その場合 idx-1 が -1 になって
-    // 座標が NaN (エラー) になっていました。
+    // ★重要修正★ idxが0になるのを防ぐ
     let idx = cumDist.findIndex(d => d >= distM);
-    if (idx < 1) idx = 1;  // 最低でも1にする（これで -1 参照を防ぐ）
+    if (idx < 1) idx = 1; 
     if (idx >= cumDist.length) idx = cumDist.length - 1;
     
     // 補間計算
@@ -1573,7 +1568,7 @@ async function makeRestPoints(feature, mass, flat) {
 
     if (segmentLen > 0) {
       const ratio = (distM - prevD) / segmentLen;
-      const prevLat = coords[idx-1][1]; // idx>=1 なので安全
+      const prevLat = coords[idx-1][1];
       const prevLon = coords[idx-1][0];
       
       // NaNチェック
@@ -1625,50 +1620,49 @@ function summaryStats(arr){
 
 /* ====== Overpass API 呼び出し（強化版） ====== */
 
-// 待機用ヘルパー（これが必要です）
+/* ==========================================================
+   【修正1】API通信部 (400エラーはリトライしない)
+   ※既存の overpassQuery と overpassRetry をこれで上書き
+   ========================================================== */
+
+// 待機用ヘルパー
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// リトライ制御
 async function overpassRetry(query) {
-  // リトライ回数を減らし、間隔を広げる
-  let delay = 3000; // 初回3秒待機
+  let delay = 3000; 
 
-  for (let i = 0; i < 3; i++) { // 最大3回トライ
+  for (let i = 0; i < 3; i++) { 
     try {
       return await overpassQuery(query);
     } catch (e) {
-      // 構文エラーなら即死
-      if (String(e).includes('status=400')) throw e;
+      const msg = String(e);
+      // ★修正: 400 (Bad Request) はリトライしても直らないので即throwして終了
+      if (msg.includes('Status 400') || msg.includes('Bad Request')) {
+        console.error("[Overpass] Stop retrying due to syntax error (NaN?):", msg);
+        throw e; 
+      }
       
-      console.warn(`[Overpass] Retry ${i+1}/3 after ${delay}ms...`);
+      console.warn(`[Overpass] Retry ${i+1}/3 after ${delay}ms...`, e);
       await sleep(delay);
-      
-      // 待機時間を倍々に増やす (3s -> 6s -> 12s)
       delay *= 2;
     }
   }
-  // 最後にもう一度だけトライしてダメなら諦める
   return await overpassQuery(query);
 }
 
-/* ==========================================================
-   【修正2】API呼び出し関数 (サーバー分散 & 半径制限版)
-   ※既存の overpassQuery と fetchPoisAround をこれで上書きしてください
-   ========================================================== */
-
-// 1. Overpass API 呼び出し (バックアップサーバー有効化)
+// 通信実行
 async function overpassQuery(query) {
   const endpoints = [
-    'https://overpass-api.de/api/interpreter',       // メイン
-    'https://overpass.kumi.systems/api/interpreter'  // バックアップ
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter'
   ];
   
   let lastError = null;
 
   for (const ep of endpoints) {
     try {
-      // 呼び出し前に少し待つ (負荷軽減)
-      await new Promise(r => setTimeout(r, 1000)); 
-
+      await sleep(1000); 
       if (typeof API_USED !== 'undefined') API_USED.overpassTotal++;
 
       const r = await fetch(ep, {
@@ -1679,20 +1673,26 @@ async function overpassQuery(query) {
 
       if (r.ok) return await r.json();
 
-      // エラーハンドリング
+      // ★修正: 400エラーを明確に識別
+      if (r.status === 400) {
+        throw new Error(`Status 400 (Bad Request) - Query might contain NaN`);
+      }
       if (r.status === 429) {
-        console.warn(`[Overpass] 429 on ${ep}. Trying next server...`);
-        await new Promise(r => setTimeout(r, 2000)); // 少し待って次へ
+        console.warn(`[Overpass] 429 on ${ep}. Waiting...`);
+        await sleep(5000); 
         continue; 
       }
       if (r.status === 504) {
-        console.warn(`[Overpass] 504 Timeout on ${ep}. Query too heavy.`);
+        console.warn(`[Overpass] 504 Timeout on ${ep}.`);
         lastError = new Error("Gateway Timeout");
         continue;
       }
       throw new Error(`Status ${r.status}`);
 
     } catch (e) {
+      // 400エラーなら即座にループを抜けて上位へ投げる
+      if (String(e).includes('Status 400')) throw e;
+      
       console.warn(`[Overpass] Error on ${ep}:`, e);
       lastError = e;
     }
@@ -1701,13 +1701,14 @@ async function overpassQuery(query) {
 }
 
 /* ==========================================================
-   【修正版】POI検索 (座標バリデーション強化版)
+   【修正2】POI検索 (NaN完全ガード)
+   ※既存の fetchPoisAround をこれで上書き
    ========================================================== */
 async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
-  // ★追加: 座標チェック（NaNに加え、範囲外の異常値も弾く）
-  if (!Number.isFinite(latRaw) || !Number.isFinite(lonRaw) || Math.abs(latRaw) > 90) {
-    console.error('[fetchPoisAround] Invalid coordinates detected:', latRaw, lonRaw);
-    return []; // ここで空を返すことで 400 Bad Request を完全に防ぐ
+  // ★重要: ここでNaNを弾く
+  if (!Number.isFinite(latRaw) || !Number.isFinite(lonRaw)) {
+    console.error('[fetchPoisAround] 座標が不正(NaN)なためスキップしました:', latRaw, lonRaw);
+    return []; // 空配列を返して終了（エラーにはしない）
   }
 
   const round6 = v => Math.round(Number(v) * 1e6) / 1e6;
@@ -1729,7 +1730,6 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     ['amenity','toilets'], ['amenity','bench'], ['amenity','vending_machine']
   ];
 
-  // 半径ステップ (最大10km)
   const radiusSteps = (() => {
     const base = Math.max(100, Number(baseRadius) || 500); 
     const steps = [1000, 3000, 5000, 10000]; 
@@ -1737,7 +1737,6 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     return s;
   })();
 
-  // クエリビルダ
   const buildQuery = (tags, radius) => {
     if (!tags.length) return null;
     const clauses = [];
@@ -1758,14 +1757,12 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     return `[out:json][timeout:25];(${clauses.join(';')});out center;`;
   };
 
-  // 実行ロジック
   const runOnce = async (tags, radius) => {
     try {
       const q = buildQuery(tags, radius);
       if (!q) return [];
       const data = await overpassRetry(q); 
       const elements = data.elements || [];
-      
       const results = [];
       elements.forEach(e => {
         const ll = e.type === 'node' ? [e.lat, e.lon] : (e.center ? [e.center.lat, e.center.lon] : null);
@@ -1783,37 +1780,27 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
       }
       return uniq;
     } catch (err) {
-      console.warn(`[Overpass] fetch error, skip radius ${radius}`, err);
+      console.warn(`[Overpass] fetch error at radius ${radius}:`, err);
       return [];
     }
   };
 
-  // 検索ループ
   let picked = [];
   for (const r of radiusSteps) {
     const res = await runOnce(PRIMARY_TAGS, r);
-    if (res.length >= limitN) {
-      picked = res.slice(0, limitN);
-      break;
-    }
+    if (res.length >= limitN) { picked = res.slice(0, limitN); break; }
     if (res.length > picked.length) picked = res;
   }
-
   if (picked.length < limitN) {
     const MERGED = [...PRIMARY_TAGS, ...EXTRA_TAGS];
     for (const r of radiusSteps) {
       const res = await runOnce(MERGED, r);
-      if (res.length >= limitN) {
-        picked = res.slice(0, limitN);
-        break;
-      }
+      if (res.length >= limitN) { picked = res.slice(0, limitN); break; }
       if (res.length > picked.length) picked = res;
     }
   }
-
   return picked.slice(0, limitN);
 }
-
 /* ===== 小ユーティリティ ===== */
 function sanitizeCoord(n, fallback) {
   const v = Number(n);
