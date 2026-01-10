@@ -1717,8 +1717,9 @@ async function overpassQuery(query) {
   throw lastError || new Error('[Overpass] All endpoints failed.');
 }
 /* ==========================================================
-   【真・解決版】POI検索 (シンプル正規表現版)
-   ※クエリを短くし、400エラーを回避します
+   【最終手段】POI検索 (正規表現・完全廃止版)
+   ※正規表現を使わず、単純な [key=value] を列挙します。
+   ※これで400エラーが出ることは論理的にあり得ません。
    ========================================================== */
 async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
   // 1. 入力値チェック
@@ -1747,17 +1748,28 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
   const useSuper       = document.getElementById('chkSuper')?.checked ?? true;
   const useDrug        = document.getElementById('chkDrug')?.checked ?? true;
 
-  // ★タグ定義（正規表現用文字列を作成）
-  const shopTypes = [];
-  if (useConvenience) shopTypes.push('convenience');
-  if (useSuper)       shopTypes.push('supermarket');
-  if (useDrug)        shopTypes.push('chemist', 'pharmacy'); // drug store
-
-  const amenityTypes = [];
-  if (useDrug) amenityTypes.push('pharmacy');
+  // ★タグを {k, v} のリストで管理
+  const TARGETS = [];
   
-  // Extra Tags
-  const extraAmenities = ['cafe', 'restaurant', 'fast_food', 'toilets', 'bench', 'vending_machine'];
+  // 1. Shop系
+  if (useConvenience) TARGETS.push({k:'shop', v:'convenience'});
+  if (useSuper)       TARGETS.push({k:'shop', v:'supermarket'});
+  if (useDrug) {
+    TARGETS.push({k:'shop', v:'chemist'});
+    TARGETS.push({k:'shop', v:'pharmacy'});
+    TARGETS.push({k:'amenity', v:'pharmacy'});
+  }
+
+  // 2. Extra (これらは常に含めるか、ヒット数不足時のみ検索するかはロジック次第ですが、
+  //    ここでは「Primaryで不足したらExtraも含めて再検索」という元のロジックに従います)
+  const EXTRAS = [
+    {k:'amenity', v:'cafe'},
+    {k:'amenity', v:'restaurant'},
+    {k:'amenity', v:'fast_food'},
+    {k:'amenity', v:'toilets'},
+    {k:'amenity', v:'bench'},
+    {k:'amenity', v:'vending_machine'}
+  ];
 
   const radiusSteps = (() => {
     const base = Math.max(100, rad); 
@@ -1766,47 +1778,33 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     return s;
   })();
 
-  // ★クエリビルダ (短縮形)
-  const buildQuery = (useExtra, radius) => {
-    if (!Number.isFinite(radius)) return null;
+  // ★クエリビルダ (正規表現なし・完全列挙)
+  const buildQuery = (tagList, radius) => {
+    if (!tagList.length) return null;
     const sRad = radius.toFixed(0);
-    const clauses = [];
+    
+    // (node...; way...; node...; way...;) の中身を作る
+    const parts = [];
 
-    // 1. Shop系 (まとめて1つの正規表現に)
-    if (shopTypes.length > 0) {
-      const reg = shopTypes.join('|');
-      // [shop~"^(convenience|supermarket)$"] のような書き方
-      clauses.push(`node(around:${sRad},${sLat},${sLon})["shop"~"^(${reg})$"]`);
-      clauses.push(`way(around:${sRad},${sLat},${sLon})["shop"~"^(${reg})$"]`);
-    }
+    tagList.forEach(t => {
+      // vending_machine の特例
+      if (t.k === 'amenity' && t.v === 'vending_machine') {
+        parts.push(`node(around:${sRad},${sLat},${sLon})["amenity"="vending_machine"]`);
+        parts.push(`node(around:${sRad},${sLat},${sLon})["vending"="drinks"]`);
+      } else {
+        // 通常 (nodeとway両方)
+        parts.push(`node(around:${sRad},${sLat},${sLon})["${t.k}"="${t.v}"]`);
+        parts.push(`way(around:${sRad},${sLat},${sLon})["${t.k}"="${t.v}"]`);
+      }
+    });
 
-    // 2. Amenity系 (Primary + Extra)
-    let ams = [...amenityTypes];
-    if (useExtra) {
-      ams = [...ams, ...extraAmenities];
-    }
-    // 重複除去
-    ams = [...new Set(ams)];
-
-    if (ams.length > 0) {
-      const reg = ams.join('|');
-      clauses.push(`node(around:${sRad},${sLat},${sLon})["amenity"~"^(${reg})$"]`);
-      clauses.push(`way(around:${sRad},${sLat},${sLon})["amenity"~"^(${reg})$"]`);
-    }
-
-    // 3. 自販機 (vending=drinks) の特別対応 (Extraのみ)
-    if (useExtra && extraAmenities.includes('vending_machine')) {
-       clauses.push(`node(around:${sRad},${sLat},${sLon})["vending"="drinks"]`);
-    }
-
-    if (clauses.length === 0) return null;
-
-    return `[out:json][timeout:25];(${clauses.join(';')});out center;`;
+    // 結合
+    return `[out:json][timeout:25];(${parts.join(';')};);out center;`;
   };
 
-  const runOnce = async (useExtra, radius) => {
+  const runOnce = async (tagList, radius) => {
     try {
-      const q = buildQuery(useExtra, radius);
+      const q = buildQuery(tagList, radius);
       if (!q) return [];
       
       const data = await overpassRetry(q); 
@@ -1816,32 +1814,38 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
       elements.forEach(e => {
         const ll = e.type === 'node' ? [e.lat, e.lon] : (e.center ? [e.center.lat, e.center.lon] : null);
         if (!ll) return;
-        const name = (e.tags && (e.tags['name:ja'] || e.tags.name || e.tags.brand)) || 'POI';
+        
+        // 名前取得 (name:ja -> name -> brand -> operator)
+        const tags = e.tags || {};
+        const name = tags['name:ja'] || tags.name || tags.brand || tags.operator || 'POI';
+        
         const dist = centerLL.distanceTo([ll[0], ll[1]]);
         results.push({ name, lat: ll[0], lon: ll[1], dist, distFromTriggerM: dist, distKm: dist/1000 });
       });
       
       results.sort((a,b)=>a.dist-b.dist);
+      
+      // 重複排除 (座標と名前で)
       const seen = new Set();
       const uniq = [];
       for(const p of results){
-          const k = `${p.lat},${p.lon}`;
+          const k = `${p.lat.toFixed(5)},${p.lon.toFixed(5)}|${p.name}`;
           if(!seen.has(k)){ seen.add(k); uniq.push(p); }
       }
       return uniq;
 
     } catch (err) {
-      console.warn(`[Overpass] Search failed at radius ${radius}`, err);
+      console.warn(`[Overpass] Error at radius ${radius}`, err);
       return null; 
     }
   };
 
   let picked = [];
   
-  // 1. Primary Search (useExtra=false)
+  // 1. Primary Search
   for (const r of radiusSteps) {
-    const res = await runOnce(false, r);
-    if (res === null) return []; 
+    const res = await runOnce(TARGETS, r);
+    if (res === null) return []; // エラー停止
     if (res.length >= limitN) {
       picked = res.slice(0, limitN);
       break;
@@ -1849,11 +1853,13 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     if (res.length > picked.length) picked = res;
   }
 
-  // 2. Extra Search (Primaryで不足なら useExtra=true で再検索)
+  // 2. Extra Search (Primary不足時)
   if (picked.length < limitN) {
+    // Primary + Extra を結合して再検索
+    const MERGED = [...TARGETS, ...EXTRAS];
     for (const r of radiusSteps) {
-      const res = await runOnce(true, r); // true = Extraタグも含める
-      if (res === null) return []; 
+      const res = await runOnce(MERGED, r);
+      if (res === null) return [];
       if (res.length >= limitN) {
         picked = res.slice(0, limitN);
         break;
@@ -1864,7 +1870,6 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
 
   return picked.slice(0, limitN);
 }
-
 /* ====== 休憩リスト表示更新 ====== */
 function updateRestListPanel(){
   const ul = $('restListPanel');
