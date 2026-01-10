@@ -1444,20 +1444,24 @@ async function totalEnergyKJ(feature,mass,flat){
   return tot;
 }
 /* ==========================================================
-   【修正3】休憩トリガー生成 (計算バグ修正)
-   ※既存の makeRestPoints をこれで上書き
+   【完全修正版】休憩トリガー生成
+   ※計算結果がNaNになった地点は、リストに追加せず完全に無視します。
    ========================================================== */
 async function makeRestPoints(feature, mass, flat) {
   const coords = feature.geometry.coordinates;
   const totalD = feature.properties.summary.distance || 0; 
   const totalE = await totalEnergyKJ(feature, mass, flat); 
 
+  // 1. 累積距離の計算
   const cumDist = [0];
   for(let i=1; i<coords.length; i++){
-    const d = L.latLng(coords[i][1], coords[i][0]).distanceTo([coords[i-1][1], coords[i-1][0]]);
-    cumDist[i] = cumDist[i-1] + d;
+    // GeoJSONは [lon, lat]
+    const p1 = L.latLng(coords[i][1], coords[i][0]);
+    const p2 = L.latLng(coords[i-1][1], coords[i-1][0]);
+    cumDist[i] = cumDist[i-1] + p1.distanceTo(p2);
   }
 
+  // 2. モードによる分割点決定
   const mode = document.querySelector('input[name="restMode"]:checked')?.value || 'auto_unit';
   let triggerDistancesM = [];
 
@@ -1468,12 +1472,14 @@ async function makeRestPoints(feature, mass, flat) {
       triggerDistancesM.push(d);
     }
     logRest(`[基本] 距離固定: ${intervalKm}kmごと → ${triggerDistancesM.length}箇所`);
+
   } else {
     let count = 0;
     if (mode === 'count') {
       count = parseInt(document.getElementById('restCount').value) || 3;
       logRest(`[基本] 回数指定: ${count}回 → 等間隔配置`);
     } else {
+      // 自動計算（区間数 - 1）
       const totalKm = totalD / 1000;
       const unitVal = parseFloat(document.getElementById('autoUnitValue')?.value) || 20;
       const rawSegments = (unitVal > 0) ? (totalKm / unitVal) : 0;
@@ -1496,10 +1502,9 @@ async function makeRestPoints(feature, mass, flat) {
     }
   }
 
-  // --- 追加トリガー ---
+  // 3. 追加トリガー
   if (document.getElementById('optPercentTrigger')?.checked) {
     const step = parseFloat(document.getElementById('percentStep').value) || 25;
-    const metric = document.getElementById('percentMetric').value || 'distance';
     let added = 0;
     for (let p = step; p < 100; p += step) {
       const ratio = p / 100.0;
@@ -1523,8 +1528,8 @@ async function makeRestPoints(feature, mass, flat) {
     if(added > 0) logRest(`[追加] 統計トリガー (平均${meanKm}km) → +${added}箇所`);
   }
 
-  // --- 統合・ソート ---
   triggerDistancesM.sort((a, b) => a - b);
+  
   const uniqueDistances = [];
   if (triggerDistancesM.length > 0) {
     uniqueDistances.push(triggerDistancesM[0]);
@@ -1535,7 +1540,7 @@ async function makeRestPoints(feature, mass, flat) {
     }
   }
 
-  // --- 座標特定 & スキップ判定 ---
+  // 4. 座標特定 & エラー排除 (★ここが重要)
   const results = [];
   const skipGoalOn = document.getElementById('skipNearGoalToggle')?.checked;
   const skipNodeOn = document.getElementById('skipNearNodeToggle')?.checked;
@@ -1554,30 +1559,39 @@ async function makeRestPoints(feature, mass, flat) {
       continue;
     }
 
-    // ★重要修正★ idxが0になるのを防ぐ
+    // インデックス特定（範囲外参照を防ぐ）
     let idx = cumDist.findIndex(d => d >= distM);
-    if (idx < 1) idx = 1; 
-    if (idx >= cumDist.length) idx = cumDist.length - 1;
+    if (idx === -1) idx = cumDist.length - 1; 
+    if (idx < 1) idx = 1; // idx-1 が -1 になるのを防ぐ
     
-    // 補間計算
     const prevD = cumDist[idx-1];
     const nextD = cumDist[idx];
     const segmentLen = nextD - prevD;
     
-    let lat = coords[idx][1], lon = coords[idx][0];
+    let lat = coords[idx][1];
+    let lon = coords[idx][0];
 
+    // 線形補間
     if (segmentLen > 0) {
       const ratio = (distM - prevD) / segmentLen;
       const prevLat = coords[idx-1][1];
       const prevLon = coords[idx-1][0];
       
-      // NaNチェック
-      if (Number.isFinite(prevLat) && Number.isFinite(prevLon)) {
+      // 計算前に値をチェック
+      if (Number.isFinite(prevLat) && Number.isFinite(prevLon) && 
+          Number.isFinite(lat) && Number.isFinite(lon)) {
         lat = prevLat + (lat - prevLat) * ratio;
         lon = prevLon + (lon - prevLon) * ratio;
       }
     }
 
+    // ★★★ 最終チェック: NaNが含まれていたら絶対に追加しない ★★★
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      console.warn(`[makeRestPoints] 計算エラー(NaN)のため地点スキップ: ${distM}m`);
+      continue; 
+    }
+
+    // 既存地点との重複チェック
     if (skipNodeOn && isNearNode(lat, lon)) {
       logRest(`[スキップ] 既存地点の近く`);
       continue;
@@ -1701,26 +1715,29 @@ async function overpassQuery(query) {
 }
 
 /* ==========================================================
-   【最終修正版】POI検索 (エラー即時中断・完全ガード)
-   ※この関数を fetchPoisAround に上書きしてください
+   【完全修正版】POI検索
+   ※APIに送る文字列に "NaN" が含まれていたら即座に中止します
    ========================================================== */
 async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
-  // 1. 入力値の完全チェック
+  // 1. 入力値チェック (数値変換)
   const lat = Number(latRaw);
   const lon = Number(lonRaw);
   const rad = Number(baseRadius);
 
+  // NaN なら即終了
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
     console.error(`[fetchPoisAround] 座標エラー (NaN): lat=${latRaw}, lon=${lonRaw}`);
-    return []; // 即終了
-  }
-  if (!Number.isFinite(rad) || rad <= 0) {
-    console.error(`[fetchPoisAround] 半径エラー: radius=${baseRadius}`);
-    return []; // 即終了
+    return []; 
   }
 
-  const round6 = v => Math.round(v * 1e6) / 1e6;
-  const centerLL = L.latLng(round6(lat), round6(lon));
+  // 文字列化して安全確認
+  const sLat = lat.toFixed(6);
+  const sLon = lon.toFixed(6);
+  if (sLat.includes('NaN') || sLon.includes('NaN')) {
+    return []; // 絶対にAPIを呼ばない
+  }
+
+  const centerLL = L.latLng(lat, lon);
   const limitN = Math.max(1, Number(limit) || 5);
 
   const useConvenience = document.getElementById('chkConvenience')?.checked ?? true;
@@ -1737,7 +1754,7 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     ['amenity','toilets'], ['amenity','bench'], ['amenity','vending_machine']
   ];
 
-  // 半径ステップ (最大10km)
+  // 半径ステップ
   const radiusSteps = (() => {
     const base = Math.max(100, rad); 
     const steps = [1000, 3000, 5000, 10000]; 
@@ -1745,8 +1762,13 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     return s;
   })();
 
+  // クエリビルダ (安全版)
   const buildQuery = (tags, radius) => {
     if (!tags.length) return null;
+    
+    // 半径がNaNなら中止
+    if (!Number.isFinite(radius)) return null;
+
     const clauses = [];
     const grouped = {};
     for (const [k, v] of tags) {
@@ -1755,21 +1777,29 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     }
     Object.entries(grouped).forEach(([k, set]) => {
       const values = Array.from(set);
+      // 文字列 lat/lon を使用して埋め込む
       if (k === 'amenity' && values.includes('vending_machine')) {
-        clauses.push(`node(around:${radius},${lat},${lon})["amenity"="vending_machine"]`);
+        clauses.push(`node(around:${radius},${sLat},${sLon})["amenity"="vending_machine"]`);
       }
       const re = '(' + values.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')';
-      clauses.push(`node(around:${radius},${lat},${lon})["${k}"~"${re}"]`);
-      clauses.push(`way(around:${radius},${lat},${lon})["${k}"~"${re}"]`);
+      clauses.push(`node(around:${radius},${sLat},${sLon})["${k}"~"${re}"]`);
+      clauses.push(`way(around:${radius},${sLat},${sLon})["${k}"~"${re}"]`);
     });
-    return `[out:json][timeout:25];(${clauses.join(';')});out center;`;
+    
+    const q = `[out:json][timeout:25];(${clauses.join(';')});out center;`;
+    
+    // ★最終防衛ライン: クエリ文字列に NaN が混入していたら無効化
+    if (q.includes('NaN')) {
+      console.error("[fetchPoisAround] Query contained NaN, aborted.");
+      return null;
+    }
+    return q;
   };
 
-  // 実行ロジック
   const runOnce = async (tags, radius) => {
     try {
       const q = buildQuery(tags, radius);
-      if (!q) return [];
+      if (!q) return []; // nullなら中止
       
       const data = await overpassRetry(q); 
       const elements = data.elements || [];
@@ -1793,19 +1823,17 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
       return uniq;
 
     } catch (err) {
-      console.warn(`[Overpass] Fatal error at radius ${radius}. Stopping search.`, err);
-      return null; // ★nullを返す＝致命的エラーの合図
+      console.warn(`[Overpass] Error at radius ${radius}`, err);
+      return null; // エラー時はnullを返してループ中断
     }
   };
 
-  // 検索ループ (エラーが出たら即break)
   let picked = [];
   
-  // 1. Primary Tags
+  // 1. Primary
   for (const r of radiusSteps) {
     const res = await runOnce(PRIMARY_TAGS, r);
-    if (res === null) return []; // ★致命的エラーなら即終了
-    
+    if (res === null) return []; // エラーなら即終了
     if (res.length >= limitN) {
       picked = res.slice(0, limitN);
       break;
@@ -1813,13 +1841,12 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     if (res.length > picked.length) picked = res;
   }
 
-  // 2. Extra Tags (Primaryで不足時のみ)
+  // 2. Extra
   if (picked.length < limitN) {
     const MERGED = [...PRIMARY_TAGS, ...EXTRA_TAGS];
     for (const r of radiusSteps) {
       const res = await runOnce(MERGED, r);
-      if (res === null) return []; // ★致命的エラーなら即終了
-
+      if (res === null) return []; // エラーなら即終了
       if (res.length >= limitN) {
         picked = res.slice(0, limitN);
         break;
