@@ -359,7 +359,7 @@ function stdDev(arr){
 }
 
 /* ==========================================================
-   【修正1】UI制御・自動計算ロジック (ここに追加！)
+   【修正1】UI制御・自動計算ロジック (区間数ベース修正版)
    ※HTMLのonclickから呼ばれるため、必ずグローバルに置いてください
    ========================================================== */
 
@@ -379,7 +379,7 @@ window.updateRestUiState = function() {
   if (mode === 'auto_unit') updateAutoCalcPreview();
 };
 
-// 2. 自動計算のプレビュー文字（例: "全長92km ÷ 20 = 5回"）を更新
+// 2. 自動計算のプレビュー文字（例: "71.1km ÷ 20 = 3.6区間 → 3回"）を更新
 window.updateAutoCalcPreview = function() {
   const prevBox = document.getElementById('autoCalcPreview');
   if (!prevBox) return;
@@ -393,34 +393,44 @@ window.updateAutoCalcPreview = function() {
     return;
   }
 
-  const count = calcAutoTriggerCount(totalKm);
-  // 1区間の距離（目安）
-  const span = (totalKm / (count + 1)).toFixed(1);
+  // 表示用に計算過程を取得
+  const unitVal = parseFloat(document.getElementById('autoUnitValue')?.value) || 20;
+  const rawSegments = (unitVal > 0) ? (totalKm / unitVal) : 0;
   
-  prevBox.textContent = `全長${totalKm.toFixed(1)}km ÷ 基準 = ${count}回休憩 (約${span}km間隔)`;
+  const count = calcAutoTriggerCount(totalKm);
+  const actualSegments = count + 1;
+  const span = (totalKm / actualSegments).toFixed(1);
+  
+  // わかりやすい表示に変更
+  prevBox.textContent = `${totalKm.toFixed(1)}km÷${unitVal}km=${rawSegments.toFixed(1)}区間 → 休憩${count}回 (約${span}km間隔)`;
 };
 
-// 3. 自動計算のコアロジック (切り上げ/切り捨て/四捨五入)
+// 3. 自動計算のコアロジック (区間数を丸めて -1 する)
 window.calcAutoTriggerCount = function(totalDistKm) {
   const unitVal = parseFloat(document.getElementById('autoUnitValue')?.value) || 20;
   if (unitVal <= 0) return 1;
 
-  const raw = totalDistKm / unitVal;
+  // 1. 区間数を計算 (例: 71.1 / 20 = 3.555)
+  const rawSegments = totalDistKm / unitVal;
+  
+  // 2. 丸める (例: 3.555 -> 4)
   const roundMode = document.querySelector('input[name="roundingMode"]:checked')?.value || 'round';
-
-  let count = 0;
+  let segments = 0;
+  
   if (roundMode === 'floor') {
-    count = Math.floor(raw);
+    segments = Math.floor(rawSegments);
   } else if (roundMode === 'ceil') {
-    count = Math.ceil(raw);
+    segments = Math.ceil(rawSegments);
   } else {
-    count = Math.round(raw);
+    segments = Math.round(rawSegments);
   }
+
+  // 3. 休憩回数は「区間数 - 1」 (例: 4区間 -> 3回休憩)
+  let count = segments - 1;
 
   // 安全のため1~50回に制限
   return Math.max(1, Math.min(50, count)); 
 };
-
 /* ===== スコア計算・評価関連 ===== */
 // ここに comboScore 関連 / SCORE_METRIC / evalByCums など
 // 「ルート評価・スコア算出」を行う関数たちをまとめて置く
@@ -1434,30 +1444,24 @@ async function totalEnergyKJ(feature,mass,flat){
   return tot;
 }
 /* ==========================================================
-   【修正版】休憩トリガー生成 (makeRestPoints)
-   ログ表示変更: 自動計算の過程（小数値）を表示するように改良
+   【修正版】休憩トリガー生成 (区間数ベースのログ表示)
    ========================================================== */
 async function makeRestPoints(feature, mass, flat) {
   const coords = feature.geometry.coordinates;
-  
-  // 全体の合計値
   const totalD = feature.properties.summary.distance || 0; // m
-  const totalT = feature.properties.summary.duration || 0; // s
   const totalE = await totalEnergyKJ(feature, mass, flat); // kJ
 
-  // 累積距離配列 (逆引き用)
   const cumDist = [0];
   for(let i=1; i<coords.length; i++){
     const d = L.latLng(coords[i][1], coords[i][0]).distanceTo([coords[i-1][1], coords[i-1][0]]);
     cumDist[i] = cumDist[i-1] + d;
   }
 
-  // --- 1. 基本分割モードの判定 ---
   const mode = document.querySelector('input[name="restMode"]:checked')?.value || 'auto_unit';
   let triggerDistancesM = [];
 
   if (mode === 'interval') {
-    // 【A: 距離固定モード】
+    // 距離固定モード
     const intervalKm = parseFloat(document.getElementById('restInterval').value) || 20;
     const intervalM = intervalKm * 1000;
     for (let d = intervalM; d < totalD - 500; d += intervalM) {
@@ -1466,55 +1470,49 @@ async function makeRestPoints(feature, mass, flat) {
     logRest(`[基本] 距離固定: ${intervalKm}kmごと → ${triggerDistancesM.length}箇所`);
 
   } else {
-    // 【B: 回数指定】または【C: 自動計算】
+    // 回数指定 or 自動計算
     let count = 0;
     
     if (mode === 'count') {
       count = parseInt(document.getElementById('restCount').value) || 3;
       logRest(`[基本] 回数指定: ${count}回 → 等間隔配置`);
     } else {
-      // 【C: 自動計算】
+      // ★自動計算（区間数ベース）
       const totalKm = totalD / 1000;
       const unitVal = parseFloat(document.getElementById('autoUnitValue')?.value) || 20;
       
-      // 計算過程（生の値）
-      const raw = (unitVal > 0) ? (totalKm / unitVal) : 0;
-
-      // グローバルの計算関数を利用して丸める
+      // 区間数の目安
+      const rawSegments = (unitVal > 0) ? (totalKm / unitVal) : 0;
+      
+      // 実際の休憩回数を計算
       count = (typeof calcAutoTriggerCount === 'function') 
               ? calcAutoTriggerCount(totalKm) 
-              : Math.round(raw);
+              : Math.max(1, Math.round(rawSegments) - 1);
       
-      // ★ログ変更箇所: 生の計算値(raw)を小数第1位まで表示
-      logRest(`[基本] 自動計算: ${totalKm.toFixed(1)}km / ${unitVal}km = ${raw.toFixed(1)} → ${count}回 (等間隔)`);
+      const actualSegments = count + 1;
+      const actualInterval = totalKm / actualSegments;
+
+      logRest(`[基本] 自動計算: ${totalKm.toFixed(1)}km / ${unitVal}km = ${rawSegments.toFixed(1)}区間`);
+      logRest(`      ↳ ${actualSegments}区間 (休憩${count}回) / 約${actualInterval.toFixed(1)}km間隔`);
     }
 
-    // 等間隔に配置
     if (count > 0) {
       const legM = totalD / (count + 1);
       for (let i = 1; i <= count; i++) {
         triggerDistancesM.push(legM * i);
       }
-      logRest(`      ↳ 約 ${(legM/1000).toFixed(2)} km 間隔で配置`);
     }
   }
 
-  // --- 2. 追加トリガー: 割合 (Percent) ---
+  // --- 追加トリガー (割合・統計) ---
+  // (ここは変更なしですが、関数全体を上書きするため含めます)
   if (document.getElementById('optPercentTrigger')?.checked) {
     const step = parseFloat(document.getElementById('percentStep').value) || 25;
     const metric = document.getElementById('percentMetric').value || 'distance';
     let added = 0;
-
     for (let p = step; p < 100; p += step) {
       const ratio = p / 100.0;
-      let targetM = 0;
-
-      if (metric === 'distance') {
-        targetM = totalD * ratio;
-      } else {
-        targetM = totalD * ratio; // 簡易近似
-      }
-      
+      let targetM = (metric === 'distance') ? totalD * ratio : totalD * ratio;
       if (targetM > 500 && targetM < totalD - 500) {
         triggerDistancesM.push(targetM);
         added++;
@@ -1523,7 +1521,6 @@ async function makeRestPoints(feature, mass, flat) {
     if(added > 0) logRest(`[追加] 割合トリガー (${step}%) → +${added}箇所`);
   }
 
-  // --- 3. 追加トリガー: 統計 (Stat) ---
   if (document.getElementById('optStatTrigger')?.checked) {
     const meanKm = parseFloat(document.getElementById('statMean').value) || 20;
     const meanM = meanKm * 1000;
@@ -1535,9 +1532,8 @@ async function makeRestPoints(feature, mass, flat) {
     if(added > 0) logRest(`[追加] 統計トリガー (平均${meanKm}km) → +${added}箇所`);
   }
 
-  // --- 4. 統合・ソート・近接除去 ---
+  // --- 統合・ソート・近接除去 ---
   triggerDistancesM.sort((a, b) => a - b);
-  
   const uniqueDistances = [];
   if (triggerDistancesM.length > 0) {
     uniqueDistances.push(triggerDistancesM[0]);
@@ -1548,7 +1544,7 @@ async function makeRestPoints(feature, mass, flat) {
     }
   }
 
-  // --- 5. 座標特定 & スキップ判定 ---
+  // --- 座標特定 & スキップ判定 ---
   const results = [];
   const skipGoalOn = document.getElementById('skipNearGoalToggle')?.checked;
   const skipNodeOn = document.getElementById('skipNearNodeToggle')?.checked;
@@ -1562,35 +1558,26 @@ async function makeRestPoints(feature, mass, flat) {
   };
 
   for (const distM of uniqueDistances) {
-    // ゴール手前スキップ
     if (skipGoalOn && (totalD - distM) < skipGoalKm * 1000) {
       logRest(`[スキップ] ゴールまで ${(totalD - distM).toFixed(0)}m`);
       continue;
     }
-
-    // 座標特定
     let idx = cumDist.findIndex(d => d >= distM);
     if (idx < 0) idx = cumDist.length - 1;
-    
-    // 補間
     const prevD = cumDist[idx-1] || 0;
     const nextD = cumDist[idx];
     const segmentLen = nextD - prevD;
     let lat = coords[idx][1], lon = coords[idx][0];
-
     if (segmentLen > 0) {
       const ratio = (distM - prevD) / segmentLen;
       const prevLat = coords[idx-1][1], prevLon = coords[idx-1][0];
       lat = prevLat + (lat - prevLat) * ratio;
       lon = prevLon + (lon - prevLon) * ratio;
     }
-
-    // 既存地点重複スキップ
     if (skipNodeOn && isNearNode(lat, lon)) {
       logRest(`[スキップ] 既存地点の近く`);
       continue;
     }
-
     results.push({ lat, lon, routeD: distM });
   }
 
