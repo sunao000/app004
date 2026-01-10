@@ -3162,53 +3162,40 @@ async function showLinearComboRoute(row){
   setActiveButton(null);
 }
 
-/* ===== 【修正版】CSV出力用データ蓄積 ===== */
+/* ==========================================================
+   【修正版】CSV出力用データ蓄積 (ID列も生成)
+   ========================================================== */
 function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls, overpassCalls){
   if (!Array.isArray(resultList) || !resultList.length) return;
   if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
 
-  // 1. スコア順にソート
   const sorted = resultList.slice().sort((a, b) => {
     return (a.score ?? 999999) - (b.score ?? 999999);
   });
 
-  // 2. 出力件数を決定 (総当たり等は全件、他は上位3件)
   let outputList = sorted;
   if (algoCode !== 'bruteforce' && algoCode !== 'linear') {
     outputList = sorted.slice(0, 3);
   }
 
-  // 3. 行データの生成
   outputList.forEach((r, idx)=>{
     const rank = idx + 1;
-    
-    // 統計値（存在チェック付き）
     const sigmaDist   = stdDev(r.stats?.dist || []);
     const sigmaTime   = stdDev(r.stats?.time || []);
     const sigmaEnergy = stdDev(r.stats?.energy || []);
 
-    // POI情報
     let poiList = (r.picks || r.picksByTrigger || []).filter(Boolean);
     if (Array.isArray(poiList[0])) poiList = poiList.flat().filter(Boolean);
 
     const poiNames = poiList.map(p => p.name || 'POI').join(' -> ');
+    
+    // ★追加: IDの並び順を作成 (getPoiIdを利用)
+    const poiIds = poiList.map(p => (typeof getPoiId === 'function' ? getPoiId(p) : '?')).join(' -> ');
+
     const poiLatLngs = poiList
       .map(p => `${(p.lat ?? p.latitude)?.toFixed(6)},${(p.lon ?? p.lng ?? p.longitude)?.toFixed(6)}`)
       .join(' | ');
 
-    // 合計値の算出
-    let totalDistM = 0;
-    let totalTimeS = 0;
-    
-    if (typeof r.dist === 'number') totalDistM = r.dist;
-    else if (r.feature?.properties?.summary?.distance) totalDistM = Number(r.feature.properties.summary.distance);
-    else if (r.stats?.dist) totalDistM = r.stats.dist.reduce((a, b) => a + b, 0);
-
-    if (typeof r.time === 'number') totalTimeS = r.time;
-    else if (r.feature?.properties?.summary?.duration) totalTimeS = Number(r.feature.properties.summary.duration);
-    else if (r.stats?.time) totalTimeS = r.stats.time.reduce((a, b) => a + b, 0);
-
-    // データ蓄積
     window.__algoCompareRows.push({
       algo: algoCode,
       label,
@@ -3217,17 +3204,16 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       score: (typeof r.score === 'number') ? r.score.toFixed(4) : r.score,
       rawScore: (r.rawScore != null) ? Number(r.rawScore).toFixed(4) : '',
       
-      dist: (totalDistM > 0) ? (totalDistM / 1000).toFixed(2) : '',
-      time: (totalTimeS > 0) ? (totalTimeS / 60).toFixed(1)    : '',
-      
       sigmaDist: (typeof sigmaDist === 'number') ? sigmaDist.toFixed(4) : '',
       sigmaTime: (typeof sigmaTime === 'number') ? sigmaTime.toFixed(4) : '',
       sigmaEnergy: (typeof sigmaEnergy === 'number') ? sigmaEnergy.toFixed(4) : '',
       
-      timeMs: elapsedMs ?? null,
-      orsCalls,
-      overpassCalls,
+      timeMs: elapsedMs ?? 0,
+      orsCalls: orsCalls ?? 0,
+      overpassCalls: overpassCalls ?? 0,
+
       poiNames,
+      poiIds,      // ★保存
       poiLatLngs
     });
   });
@@ -3299,6 +3285,9 @@ function showAlgoListInPanel(panel, list, algoCode){
   });
 }
   
+/* ==========================================================
+   【修正版】アルゴリズム比較CSVダウンロード (ID列追加)
+   ========================================================== */
 function downloadAlgoCompareCsv(){
   const rows = window.__algoCompareRows || [];
   if (!rows.length){
@@ -3310,7 +3299,7 @@ function downloadAlgoCompareCsv(){
     'algo',
     'label',
     'rank',
-    'bf_rank',          // ★追加
+    'bf_rank',
     'score',
     'rawScore',
     'sigmaDist_km',
@@ -3320,6 +3309,7 @@ function downloadAlgoCompareCsv(){
     'ors_calls',
     'overpass_calls',
     'poi_names',
+    'poi_ids',      // ★列追加
     'poi_latlngs'
   ];
 
@@ -3327,7 +3317,7 @@ function downloadAlgoCompareCsv(){
     r.algo ?? '',
     `"${csvEscape(r.label ?? '')}"`,
     r.rank ?? '',
-    r.bfRank ?? '',     // ★追加
+    r.bfRank ?? '',
     r.score ?? '',
     r.rawScore ?? '',
     r.sigmaDist ?? '',
@@ -3337,6 +3327,7 @@ function downloadAlgoCompareCsv(){
     r.orsCalls ?? '',
     r.overpassCalls ?? '',
     `"${csvEscape(r.poiNames ?? '')}"`,
+    `"${csvEscape(r.poiIds ?? '')}"`,    // ★出力
     `"${csvEscape(r.poiLatLngs ?? '')}"`
   ]);
 
@@ -3489,53 +3480,36 @@ function legEnergyMseCost(energyKj, idealEnergyPerLeg){
   return de * de;
 }
 
+/* ==========================================================
+   【修正版】Viterbiエッジ記録 (ID保存対応)
+   ========================================================== */
 function recordViterbiEdge(row){
   if (!window.__collectViterbiEdges) return;
 
-  // 受け皿（集約Map）
   if (!window.__viterbiEdgeAgg) window.__viterbiEdgeAgg = new Map();
 
-  // from/to の同一判定キー（同一組み合わせを1行化）
-  // start/goal は idx が -1 なので区別可能
-  const fromIdx = (row?.fromIdx ?? '');
-  const toIdx   = (row?.toIdx ?? '');
-  const fromName = row?.fromName ?? '';
-  const toName   = row?.toName ?? '';
-
-  const key = `${fromIdx}|${toIdx}|${fromName}|${toName}`;
+  // ★IDをキーに含める (fromId|toId)
+  const fromId = row.fromId || 'unknown';
+  const toId   = row.toId   || 'unknown';
+  const key = `${fromId}|${toId}`;
 
   const cur = window.__viterbiEdgeAgg.get(key) || {
-    fromIdx, toIdx,
-    fromName, toName,
-    fromLat: row?.fromLat ?? null,
-    fromLon: row?.fromLon ?? null,
-    toLat:   row?.toLat ?? null,
-    toLon:   row?.toLon ?? null,
-
+    fromId, toId, // ★ID保存
+    fromName: row.fromName || '',
+    toName:   row.toName   || '',
     count: 0,
     sumEnergyKj: 0,
     sumDistKm: 0,
     sumTimeMin: 0,
     sumCost: 0,
-    // ▼▼ 追加: 理想値を保存（最初の1回目の値を採用） ▼▼
-    idealEnergyKj: row.idealEnergyPerLeg
+    idealEnergyKj: row.idealEnergyKj
   };
 
   cur.count += 1;
-
-  const e = Number(row?.energyKj);
-  if (Number.isFinite(e)) cur.sumEnergyKj += e;
-
-  const d = Number(row?.distKm);
-  if (Number.isFinite(d)) cur.sumDistKm += d;
-
-  const tm = Number(row?.timeMin);
-  if (Number.isFinite(tm)) cur.sumTimeMin += tm;
-
-  // costは「mseEnergy」など、あなたが使いたい代表値を入れる
-  // ここでは mseEnergy を cost として集約
-  const c = Number(row?.mseEnergy ?? row?.cost);
-  if (Number.isFinite(c)) cur.sumCost += c;
+  if (Number.isFinite(row.energyKj)) cur.sumEnergyKj += row.energyKj;
+  if (Number.isFinite(row.distKm))   cur.sumDistKm   += row.distKm;
+  if (Number.isFinite(row.timeMin))  cur.sumTimeMin  += row.timeMin;
+  if (Number.isFinite(row.cost))     cur.sumCost     += row.cost;
 
   window.__viterbiEdgeAgg.set(key, cur);
 }
@@ -3946,74 +3920,67 @@ function formatNum(x, digits=3){
   return n.toFixed(digits);
 }
 
+/* ==========================================================
+   【修正版】Viterbiエッジ CSVダウンロード
+   ※From_ID, To_ID を列の先頭に追加
+   ========================================================== */
 function downloadViterbiEdgesCsv(){
-  // ▼▼ 追加: Mapがあるなら、そこから最新のリスト(理想値付き)を再生成する ▼▼
+  // Mapから最新リストを再生成
   if (window.__viterbiEdgeAgg) {
     window.__viterbiAllEdgeRows = Array.from(window.__viterbiEdgeAgg.values()).map(x => {
       const n = Math.max(1, x.count);
       return {
-        fromIdx: x.fromIdx,
-        toIdx: x.toIdx,
+        fromId: x.fromId, // ★ID
+        toId:   x.toId,   // ★ID
         fromName: x.fromName,
         toName: x.toName,
-        fromLat: x.fromLat,
-        fromLon: x.fromLon,
-        toLat: x.toLat,
-        toLon: x.toLon,
         count: x.count,
         energyKj: x.sumEnergyKj / n,
         distKm: x.sumDistKm / n,
         timeMin: x.sumTimeMin / n,
         cost: x.sumCost / n,
-        idealEnergyKj: x.idealEnergyKj // 新しい項目
+        idealEnergyKj: x.idealEnergyKj
       };
     });
   }
+  
   const rows = window.__viterbiAllEdgeRows || [];
   if (!rows.length){
-    alert('Viterbiのエッジログがありません。先にViterbiを実行してください。');
+    alert('Viterbiのエッジログがありません。');
     return;
   }
 
   const esc = s => String(s ?? '').replace(/"/g,'""');
 
-  // ★ 集約後エッジ用ヘッダ
+  // ★ヘッダーにIDを追加
   const header = [
-    'from_idx','to_idx',
-    'from_name','to_name',
-    'from_lat','from_lon','to_lat','to_lon',
+    'from_id', 'to_id', 
+    'from_name', 'to_name',
     'count',
     'energy_kJ',
-    'ideal_energy_kJ', // 追加
+    'ideal_energy_kJ',
     'dist_km',
     'time_min',
     'cost'
   ];
 
-  const lines = [];
-  lines.push(header.join(','));
+  const lines = [header.join(',')];
 
   for (const r of rows){
-    // ★ここを修正：ideal_energy_kJ を挿入し、formatNumで整形
     lines.push([
-      r.fromIdx ?? '',
-      r.toIdx ?? '',
+      r.fromId ?? '', // ★ID出力
+      r.toId   ?? '', // ★ID出力
       `"${esc(r.fromName)}"`,
       `"${esc(r.toName)}"`,
-      r.fromLat ?? '',
-      r.fromLon ?? '',
-      r.toLat ?? '',
-      r.toLon ?? '',
       r.count ?? 1,
       formatNum(r.energyKj, 2),
-      formatNum(r.idealEnergyKj, 2), // ★ここに値を追加！
+      formatNum(r.idealEnergyKj, 2),
       formatNum(r.distKm, 3),
       formatNum(r.timeMin, 2),
       formatNum(r.cost, 3)
     ].join(','));
   }
 
-  // Excel対策：UTF-8 BOM
   const bom = new Uint8Array([0xEF,0xBB,0xBF]);
   const blob = new Blob([bom, lines.join('\n')], {type:'text/csv;charset=utf-8'});
   const url = URL.createObjectURL(blob);
@@ -4572,10 +4539,7 @@ window.drawManualComparison = async function() {
  * @param options.ignoreGoalInRank trueならGoal区間を順位決定に含めない(再評価時)
  */
 /* ==========================================================
-   【修正版】汎用Viterbiソルバー (Goalエッジログ対応)
-   ========================================================== */
-/* ==========================================================
-   【修正版】汎用Viterbiソルバー (進捗表示対応)
+   【修正版】汎用Viterbiソルバー (ID記録対応)
    ========================================================== */
 async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
   const T = Array.isArray(groups) ? groups.length : 0;
@@ -4597,6 +4561,17 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
         const leg = await apiFunc(start, firstPoi, profile);
         const diff = leg.distKm - idealDistPerLeg;
         initialCost = diff * diff; 
+        
+        // ★Edge記録 (ID付き)
+        recordViterbiEdge({
+          t: 0,
+          fromId: getPoiId(start), toId: getPoiId(firstPoi), // ID
+          fromName: start.name,    toName: firstPoi.name,
+          distKm: leg.distKm, timeMin: leg.timeMin, energyKj: leg.energyKj,
+          cost: initialCost,
+          idealEnergyKj: ideals.idealEnergyPerLeg
+        });
+
       } catch(e) {}
     }
     currentPaths[i] = {
@@ -4609,7 +4584,6 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
 
   // --- Step 1..T-1 ---
   for (let t = 1; t < T; t++) {
-    // ★進捗報告
     if (options.onProgress) options.onProgress(t, T);
 
     const nextGroup = groups[t];
@@ -4630,6 +4604,16 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
           const diff = leg.distKm - idealDistPerLeg;
           const newCost = parent.currentCost + (diff * diff);
 
+          // ★Edge記録 (ID付き)
+          recordViterbiEdge({
+            t: t,
+            fromId: getPoiId(parent.lastNode), toId: getPoiId(nextPoi), // ID
+            fromName: parent.lastNode.name,    toName: nextPoi.name,
+            distKm: leg.distKm, timeMin: leg.timeMin, energyKj: leg.energyKj,
+            cost: (diff * diff),
+            idealEnergyKj: ideals.idealEnergyPerLeg
+          });
+
           if (newCost < bestCost) {
             bestCost = newCost;
             bestPath = {
@@ -4646,11 +4630,22 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
     currentPaths = nextPaths;
   }
 
-  // Finalize
+  // Finalize (Goal Edge)
   const candidates = currentPaths.filter(p => p && p.valid);
   if (candidates.length > 0) {
     for (const cand of candidates) {
-        try { await apiFunc(cand.lastNode, goal, profile); } catch(e) {}
+        try { 
+          const leg = await apiFunc(cand.lastNode, goal, profile);
+          // ★Edge記録 (ID付き - Goal)
+          recordViterbiEdge({
+            t: T,
+            fromId: getPoiId(cand.lastNode), toId: getPoiId(goal), // ID
+            fromName: cand.lastNode.name,    toName: goal.name,
+            distKm: leg.distKm, timeMin: leg.timeMin, energyKj: leg.energyKj,
+            cost: 0,
+            idealEnergyKj: ideals.idealEnergyPerLeg
+          });
+        } catch(e) {}
     }
   }
 
@@ -4833,7 +4828,7 @@ const ALGO_CONFIG = [
 ];
 
 /* ======================================================
-   【修正版】メイン実行関数 (進捗表示対応)
+   【修正版】メイン実行関数 (API回数表示 & CSV記録対応)
    ====================================================== */
 async function runAlgoCompareDebug(){
   const panel = $('algoComparePanel');
@@ -4869,10 +4864,15 @@ async function runAlgoCompareDebug(){
         else panel.textContent += '.';
     };
 
+    // 待機 (API負荷軽減)
     await new Promise(r => setTimeout(r, (cfg.id==='dbg_linear' ? 100 : 2000)));
 
     const t0 = performance.now();
+    
+    // ★APIカウント記録 (開始前)
     const orsBefore = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
+    const ovBefore  = (typeof API_USED !== 'undefined') ? API_USED.overpassTotal : 0;
+    
     let list = [];
 
     try {
@@ -4894,14 +4894,18 @@ async function runAlgoCompareDebug(){
 
       const ms = performance.now() - t0;
       const sec = ms / 1000;
-      const ors = (typeof API_USED !== 'undefined') ? (API_USED.orsTotal - orsBefore) : 0;
       
-      // 完了時間表示
-      panel.textContent += ` (${sec.toFixed(2)}s)\n`;
+      // ★APIカウント差分計算 (終了後 - 開始前)
+      const orsDiff = (typeof API_USED !== 'undefined') ? (API_USED.orsTotal - orsBefore) : 0;
+      const ovDiff  = (typeof API_USED !== 'undefined') ? (API_USED.overpassTotal - ovBefore) : 0;
+      
+      // ★パネル表示に回数を追加 (ORS:〇回 / Ov:〇回)
+      panel.textContent += ` (${sec.toFixed(2)}s | ORS:${orsDiff} / Ov:${ovDiff})\n`;
 
       if (list.length) {
         showAlgoListInPanel(panel, list.slice(0, 5), cfg.id);
-        pushAlgoResultsForCsv(cfg.id, cfg.label, list, ms, ors, 0);
+        // CSV出力用関数にもAPI回数を渡す
+        pushAlgoResultsForCsv(cfg.id, cfg.label, list, ms, orsDiff, ovDiff);
       } else {
         panel.textContent += '(候補なし)\n';
       }
@@ -4942,18 +4946,23 @@ function calcDistMseFromFeature(feature, idealDistPerLeg) {
    ========================================================== */
 
 // 1. POIから一意なID文字（例: "T0_3", "START"）を生成するヘルパー
-// ※これを新規追加してください
+/* ==========================================================
+   【修正版】POI ID取得ヘルパー
+   ========================================================== */
 function getPoiId(p) {
   if (!p) return 'null';
-  
   // スタート/ゴール
   if (p.type === 'start') return 'START';
   if (p.type === 'goal')  return 'GOAL';
-
-  // 内部インデックスがある場合 (例: トリガー0の3番目 -> T0_3)
+  // 内部インデックスがある場合 (例: T0_3)
   if (p._triggerId !== undefined && p._poiIdInTrigger !== undefined) {
     return `T${p._triggerId}_${p._poiIdInTrigger}`;
   }
+  // なければ座標をID代わりにする
+  const lat = (p.lat ?? p.latitude ?? 0);
+  const lon = (p.lon ?? p.lng ?? 0);
+  return `${Number(lat).toFixed(5)},${Number(lon).toFixed(5)}`;
+}
 
   // なければ座標をID代わりにする
   const lat = (p.lat ?? p.latitude ?? 0);
@@ -4962,7 +4971,9 @@ function getPoiId(p) {
 }
 
 // 2. API呼び出し＆ログ記録 (ID記録対応版)
-// ※既存の calcLegCostWithApi をこれで上書きしてください
+/* ==========================================================
+   【修正版】API呼び出し＆ログ記録 (ID記録対応版)
+   ========================================================== */
 async function calcLegCostWithApi(from, to, profile){
   if (!from || !to) throw new Error('calcLegCostWithApi: from/to が不正です');
 
@@ -4993,7 +5004,6 @@ async function calcLegCostWithApi(from, to, profile){
     const distKm  = (Number(summary.distance) || 0) / 1000;
     const timeMin = (Number(summary.duration) || 0) / 60;
     
-    // エネルギー取得
     const ene = out?.stats?.energy ?? out?.stats?.E ?? null;
     let energyKj = 0;
     if (Array.isArray(ene) && ene.length) {
@@ -5007,7 +5017,7 @@ async function calcLegCostWithApi(from, to, profile){
     if (window.__collectViterbiEdges) {
       window.__viterbiAllEdgeRows = window.__viterbiAllEdgeRows || [];
       window.__viterbiAllEdgeRows.push({
-        fromId, toId,       // ★ここが重要
+        fromId, toId,       // ★ID保存
         fromName, toName,
         fromLat, fromLon, toLat, toLon,
         distKm, timeMin, energyKj,
@@ -5024,7 +5034,7 @@ async function calcLegCostWithApi(from, to, profile){
     if (window.__collectViterbiEdges) {
       window.__viterbiAllEdgeRows = window.__viterbiAllEdgeRows || [];
       window.__viterbiAllEdgeRows.push({
-        fromId, toId,       // ★エラー時もID記録
+        fromId, toId,       // ★エラー時もID保存
         fromName, toName,
         fromLat, fromLon, toLat, toLon,
         distKm: '', timeMin: '', energyKj: '',
@@ -5038,8 +5048,10 @@ async function calcLegCostWithApi(from, to, profile){
   }
 }
 
-// 3. Viterbiログ CSVダウンロード (ID列追加版)
-// ※既存の downloadViterbiLogCsv をこれで上書きしてください
+/* ==========================================================
+   【修正版】Viterbiログ CSVダウンロード
+   ※From_ID, To_ID を列の先頭に追加
+   ========================================================== */
 function downloadViterbiLogCsv() {
   const rows = window.__viterbiAllEdgeRows || [];
   if (!rows.length) {
