@@ -1717,11 +1717,8 @@ async function overpassQuery(query) {
   throw lastError || new Error('[Overpass] All endpoints failed.');
 }
 /* ==========================================================
-   【完全修正版】POI検索
-   ※APIに送る文字列に "NaN" が含まれていたら即座に中止します
-   ========================================================== */
-/* ==========================================================
-   【デバッグ版】POI検索
+   【最終解決版】POI検索 (正規表現を使わない安全な書き方)
+   ※400エラーの原因だった正規表現クエリを廃止し、単純なOR条件に変更
    ========================================================== */
 async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
   // 1. 入力値チェック
@@ -1738,14 +1735,10 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     return [];
   }
 
-  // ★文字列化（空白除去・桁数固定）
-  const sLat = lat.toFixed(6).trim();
-  const sLon = lon.toFixed(6).trim();
-  
-  if (sLat.includes('NaN') || sLon.includes('NaN')) {
-    console.error(`[fetchPoisAround] 文字列化でNaN検出: ${sLat}, ${sLon}`);
-    return [];
-  }
+  // 文字列化（安全のため）
+  const sLat = lat.toFixed(6);
+  const sLon = lon.toFixed(6);
+  if (sLat.includes('NaN') || sLon.includes('NaN')) return [];
 
   const centerLL = L.latLng(lat, lon);
   const limitN = Math.max(1, Number(limit) || 5);
@@ -1754,14 +1747,23 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
   const useSuper       = document.getElementById('chkSuper')?.checked ?? true;
   const useDrug        = document.getElementById('chkDrug')?.checked ?? true;
 
+  // ★変更点：タグを「キー」と「値」のペアのリストにする
   const PRIMARY_TAGS = [];
-  if (useConvenience) PRIMARY_TAGS.push(['shop', 'convenience']);
-  if (useSuper)       PRIMARY_TAGS.push(['shop', 'supermarket']);
-  if (useDrug)        PRIMARY_TAGS.push(['shop','chemist'], ['shop','pharmacy'], ['amenity','pharmacy']);
+  if (useConvenience) PRIMARY_TAGS.push({k:'shop', v:'convenience'});
+  if (useSuper)       PRIMARY_TAGS.push({k:'shop', v:'supermarket'});
+  if (useDrug) {
+    PRIMARY_TAGS.push({k:'shop', v:'chemist'});
+    PRIMARY_TAGS.push({k:'shop', v:'pharmacy'});
+    PRIMARY_TAGS.push({k:'amenity', v:'pharmacy'});
+  }
 
   const EXTRA_TAGS = [
-    ['amenity','cafe'], ['amenity','restaurant'], ['amenity','fast_food'],
-    ['amenity','toilets'], ['amenity','bench'], ['amenity','vending_machine']
+    {k:'amenity', v:'cafe'},
+    {k:'amenity', v:'restaurant'},
+    {k:'amenity', v:'fast_food'},
+    {k:'amenity', v:'toilets'},
+    {k:'amenity', v:'bench'},
+    {k:'amenity', v:'vending_machine'}
   ];
 
   const radiusSteps = (() => {
@@ -1771,41 +1773,36 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     return s;
   })();
 
-  const buildQuery = (tags, radius) => {
-    if (!tags.length) return null;
-    
-    // 半径チェック
+  // ★変更点：正規表現を使わず、単純な (node...; way...;) を羅列するクエリビルダ
+  const buildQuery = (tagList, radius) => {
+    if (!tagList.length) return null;
     if (!Number.isFinite(radius)) return null;
-    const sRad = radius.toFixed(0); // 整数化
-
+    
+    const sRad = radius.toFixed(0);
     const clauses = [];
-    const grouped = {};
-    for (const [k, v] of tags) {
-      grouped[k] = grouped[k] || new Set();
-      grouped[k].add(v);
-    }
-    Object.entries(grouped).forEach(([k, set]) => {
-      const values = Array.from(set);
-      
-      // ★Query生成 (座標と半径を安全な文字列で埋め込む)
-      if (k === 'amenity' && values.includes('vending_machine')) {
+
+    // リスト内のタグをすべて単純な OR 条件として展開
+    tagList.forEach(t => {
+      // vending_machine の特別対応
+      if (t.k === 'amenity' && t.v === 'vending_machine') {
+        // amenity=vending_machine
         clauses.push(`node(around:${sRad},${sLat},${sLon})["amenity"="vending_machine"]`);
+        // vending=drinks (単純化)
+        clauses.push(`node(around:${sRad},${sLat},${sLon})["vending"="drinks"]`);
+      } else {
+        // 通常のタグ
+        clauses.push(`node(around:${sRad},${sLat},${sLon})["${t.k}"="${t.v}"]`);
+        clauses.push(`way(around:${sRad},${sLat},${sLon})["${t.k}"="${t.v}"]`);
       }
-      
-      // 正規表現エスケープの確認
-      // \が1つだとJS文字列内で消えるため、\\として記述
-      const re = '(' + values.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')';
-      
-      clauses.push(`node(around:${sRad},${sLat},${sLon})["${k}"~"${re}"]`);
-      clauses.push(`way(around:${sRad},${sLat},${sLon})["${k}"~"${re}"]`);
     });
     
+    // 結合してクエリ化
     return `[out:json][timeout:25];(${clauses.join(';')});out center;`;
   };
 
-  const runOnce = async (tags, radius) => {
+  const runOnce = async (tagList, radius) => {
     try {
-      const q = buildQuery(tags, radius);
+      const q = buildQuery(tagList, radius);
       if (!q) return [];
       
       const data = await overpassRetry(q); 
@@ -1815,7 +1812,11 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
       elements.forEach(e => {
         const ll = e.type === 'node' ? [e.lat, e.lon] : (e.center ? [e.center.lat, e.center.lon] : null);
         if (!ll) return;
-        const name = (e.tags && (e.tags['name:ja'] || e.tags.name || e.tags.brand)) || 'POI';
+        
+        // 名前取得 (name:ja -> name -> brand -> operator の順)
+        const tags = e.tags || {};
+        const name = tags['name:ja'] || tags.name || tags.brand || tags.operator || 'POI';
+        
         const dist = centerLL.distanceTo([ll[0], ll[1]]);
         results.push({ name, lat: ll[0], lon: ll[1], dist, distFromTriggerM: dist, distKm: dist/1000 });
       });
@@ -1830,7 +1831,7 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
       return uniq;
 
     } catch (err) {
-      console.warn(`[Overpass] Search failed at radius ${radius}`, err);
+      console.warn(`[Overpass] Error at radius ${radius}`, err);
       return null; 
     }
   };
@@ -1840,7 +1841,7 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
   // 1. Primary
   for (const r of radiusSteps) {
     const res = await runOnce(PRIMARY_TAGS, r);
-    if (res === null) return []; // エラーなら即終了
+    if (res === null) return []; 
     if (res.length >= limitN) {
       picked = res.slice(0, limitN);
       break;
@@ -1850,10 +1851,11 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
 
   // 2. Extra
   if (picked.length < limitN) {
+    // PrimaryとExtraを結合
     const MERGED = [...PRIMARY_TAGS, ...EXTRA_TAGS];
     for (const r of radiusSteps) {
       const res = await runOnce(MERGED, r);
-      if (res === null) return []; // エラーなら即終了
+      if (res === null) return [];
       if (res.length >= limitN) {
         picked = res.slice(0, limitN);
         break;
