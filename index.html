@@ -1444,7 +1444,7 @@ async function totalEnergyKJ(feature,mass,flat){
   return tot;
 }
 /* ==========================================================
-   【修正版】休憩トリガー生成 (区間数ベースのログ表示)
+   【修正版】休憩トリガー生成 (NaN対策 & ログ修正済み)
    ========================================================== */
 async function makeRestPoints(feature, mass, flat) {
   const coords = feature.geometry.coordinates;
@@ -1505,7 +1505,6 @@ async function makeRestPoints(feature, mass, flat) {
   }
 
   // --- 追加トリガー (割合・統計) ---
-  // (ここは変更なしですが、関数全体を上書きするため含めます)
   if (document.getElementById('optPercentTrigger')?.checked) {
     const step = parseFloat(document.getElementById('percentStep').value) || 25;
     const metric = document.getElementById('percentMetric').value || 'distance';
@@ -1544,7 +1543,7 @@ async function makeRestPoints(feature, mass, flat) {
     }
   }
 
-  // --- 座標特定 & スキップ判定 ---
+  // --- 座標特定 & スキップ判定 (NaN対策済み) ---
   const results = [];
   const skipGoalOn = document.getElementById('skipNearGoalToggle')?.checked;
   const skipNodeOn = document.getElementById('skipNearNodeToggle')?.checked;
@@ -1562,22 +1561,35 @@ async function makeRestPoints(feature, mass, flat) {
       logRest(`[スキップ] ゴールまで ${(totalD - distM).toFixed(0)}m`);
       continue;
     }
+
+    // ★座標特定（安全化：インデックス0参照回避）
     let idx = cumDist.findIndex(d => d >= distM);
-    if (idx < 0) idx = cumDist.length - 1;
-    const prevD = cumDist[idx-1] || 0;
+    if (idx < 1) idx = 1; 
+    if (idx >= cumDist.length) idx = cumDist.length - 1;
+    
+    const prevD = cumDist[idx-1];
     const nextD = cumDist[idx];
     const segmentLen = nextD - prevD;
+    
     let lat = coords[idx][1], lon = coords[idx][0];
+
     if (segmentLen > 0) {
       const ratio = (distM - prevD) / segmentLen;
-      const prevLat = coords[idx-1][1], prevLon = coords[idx-1][0];
-      lat = prevLat + (lat - prevLat) * ratio;
-      lon = prevLon + (lon - prevLon) * ratio;
+      const prevLat = coords[idx-1][1];
+      const prevLon = coords[idx-1][0];
+      
+      // NaNチェック
+      if (Number.isFinite(prevLat) && Number.isFinite(prevLon)) {
+        lat = prevLat + (lat - prevLat) * ratio;
+        lon = prevLon + (lon - prevLon) * ratio;
+      }
     }
+
     if (skipNodeOn && isNearNode(lat, lon)) {
       logRest(`[スキップ] 既存地点の近く`);
       continue;
     }
+
     results.push({ lat, lon, routeD: distM });
   }
 
