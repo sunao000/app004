@@ -1666,6 +1666,9 @@ async function overpassRetry(query) {
 }
 
 // 通信実行
+/* ==========================================================
+   【デバッグ版】API通信 (エラー時のクエリ表示機能付き)
+   ========================================================== */
 async function overpassQuery(query) {
   const endpoints = [
     'https://overpass-api.de/api/interpreter',
@@ -1687,10 +1690,12 @@ async function overpassQuery(query) {
 
       if (r.ok) return await r.json();
 
-      // ★修正: 400エラーを明確に識別
+      // ★デバッグ: 400エラーの時、送ったクエリをログに出す
       if (r.status === 400) {
-        throw new Error(`Status 400 (Bad Request) - Query might contain NaN`);
+        console.error(`[Overpass] 400 Bad Request! Query was:\n${query}`);
+        throw new Error(`Status 400 (Bad Request)`);
       }
+      
       if (r.status === 429) {
         console.warn(`[Overpass] 429 on ${ep}. Waiting...`);
         await sleep(5000); 
@@ -1704,37 +1709,42 @@ async function overpassQuery(query) {
       throw new Error(`Status ${r.status}`);
 
     } catch (e) {
-      // 400エラーなら即座にループを抜けて上位へ投げる
       if (String(e).includes('Status 400')) throw e;
-      
       console.warn(`[Overpass] Error on ${ep}:`, e);
       lastError = e;
     }
   }
   throw lastError || new Error('[Overpass] All endpoints failed.');
 }
-
 /* ==========================================================
    【完全修正版】POI検索
    ※APIに送る文字列に "NaN" が含まれていたら即座に中止します
    ========================================================== */
+/* ==========================================================
+   【デバッグ版】POI検索
+   ========================================================== */
 async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
-  // 1. 入力値チェック (数値変換)
+  // 1. 入力値チェック
   const lat = Number(latRaw);
   const lon = Number(lonRaw);
   const rad = Number(baseRadius);
 
-  // NaN なら即終了
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-    console.error(`[fetchPoisAround] 座標エラー (NaN): lat=${latRaw}, lon=${lonRaw}`);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90) {
+    console.error(`[fetchPoisAround] 座標異常スキップ: lat=${latRaw}, lon=${lonRaw}`);
     return []; 
   }
+  if (!Number.isFinite(rad) || rad <= 0) {
+    console.error(`[fetchPoisAround] 半径異常スキップ: radius=${baseRadius}`);
+    return [];
+  }
 
-  // 文字列化して安全確認
-  const sLat = lat.toFixed(6);
-  const sLon = lon.toFixed(6);
+  // ★文字列化（空白除去・桁数固定）
+  const sLat = lat.toFixed(6).trim();
+  const sLon = lon.toFixed(6).trim();
+  
   if (sLat.includes('NaN') || sLon.includes('NaN')) {
-    return []; // 絶対にAPIを呼ばない
+    console.error(`[fetchPoisAround] 文字列化でNaN検出: ${sLat}, ${sLon}`);
+    return [];
   }
 
   const centerLL = L.latLng(lat, lon);
@@ -1754,7 +1764,6 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     ['amenity','toilets'], ['amenity','bench'], ['amenity','vending_machine']
   ];
 
-  // 半径ステップ
   const radiusSteps = (() => {
     const base = Math.max(100, rad); 
     const steps = [1000, 3000, 5000, 10000]; 
@@ -1762,12 +1771,12 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     return s;
   })();
 
-  // クエリビルダ (安全版)
   const buildQuery = (tags, radius) => {
     if (!tags.length) return null;
     
-    // 半径がNaNなら中止
+    // 半径チェック
     if (!Number.isFinite(radius)) return null;
+    const sRad = radius.toFixed(0); // 整数化
 
     const clauses = [];
     const grouped = {};
@@ -1777,29 +1786,27 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
     }
     Object.entries(grouped).forEach(([k, set]) => {
       const values = Array.from(set);
-      // 文字列 lat/lon を使用して埋め込む
+      
+      // ★Query生成 (座標と半径を安全な文字列で埋め込む)
       if (k === 'amenity' && values.includes('vending_machine')) {
-        clauses.push(`node(around:${radius},${sLat},${sLon})["amenity"="vending_machine"]`);
+        clauses.push(`node(around:${sRad},${sLat},${sLon})["amenity"="vending_machine"]`);
       }
+      
+      // 正規表現エスケープの確認
+      // \が1つだとJS文字列内で消えるため、\\として記述
       const re = '(' + values.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')';
-      clauses.push(`node(around:${radius},${sLat},${sLon})["${k}"~"${re}"]`);
-      clauses.push(`way(around:${radius},${sLat},${sLon})["${k}"~"${re}"]`);
+      
+      clauses.push(`node(around:${sRad},${sLat},${sLon})["${k}"~"${re}"]`);
+      clauses.push(`way(around:${sRad},${sLat},${sLon})["${k}"~"${re}"]`);
     });
     
-    const q = `[out:json][timeout:25];(${clauses.join(';')});out center;`;
-    
-    // ★最終防衛ライン: クエリ文字列に NaN が混入していたら無効化
-    if (q.includes('NaN')) {
-      console.error("[fetchPoisAround] Query contained NaN, aborted.");
-      return null;
-    }
-    return q;
+    return `[out:json][timeout:25];(${clauses.join(';')});out center;`;
   };
 
   const runOnce = async (tags, radius) => {
     try {
       const q = buildQuery(tags, radius);
-      if (!q) return []; // nullなら中止
+      if (!q) return [];
       
       const data = await overpassRetry(q); 
       const elements = data.elements || [];
@@ -1823,8 +1830,8 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
       return uniq;
 
     } catch (err) {
-      console.warn(`[Overpass] Error at radius ${radius}`, err);
-      return null; // エラー時はnullを返してループ中断
+      console.warn(`[Overpass] Search failed at radius ${radius}`, err);
+      return null; 
     }
   };
 
@@ -1856,12 +1863,6 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
   }
 
   return picked.slice(0, limitN);
-}
-/* ===== 小ユーティリティ ===== */
-function sanitizeCoord(n, fallback) {
-  const v = Number(n);
-  if (!isFinite(v)) return Number(fallback);
-  return Math.round(v * 1e6) / 1e6;
 }
 
 /* ====== 休憩リスト表示更新 ====== */
