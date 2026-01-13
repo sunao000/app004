@@ -4548,118 +4548,316 @@ window.drawManualComparison = async function() {
 /* ==========================================================
    【修正版】汎用Viterbiソルバー (ID記録対応)
    ========================================================== */
+/* ==========================================================
+   【完全統合版】汎用Viterbiソルバー
+   (キャッシュ・パス累積・詳細計測・ID付きEdge記録・コスト分離 全対応)
+   ========================================================== */
 async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
   const T = Array.isArray(groups) ? groups.length : 0;
   if (!T) return [];
 
   const ignoreStart = options.ignoreStart === true;
+  // ignoreGoalInRank: trueなら「順位は確定済み(描画のみ)」、falseなら「これから順位決定(再ランク)」
   const ignoreGoalInRank = options.ignoreGoalInRank === true;
+  const ignoreGoalEdge = options.ignoreGoalEdge === true;
+  const usePathAccumulation = (options.usePathAccumulation === true) && !ignoreStart;
+  
+  const saveToCache = options.saveToCache === true;
+  const tryUseCache = options.tryUseCache === true;
+
+  // Edge記録用ヘルパー (ID取得込み)
+  const recordEdge = (data) => {
+      if (typeof recordViterbiEdge === 'function') recordViterbiEdge(data);
+  };
+
   const apiFunc = calcLegCostWithApi; 
   const ideals = getIdealPerLegs();
   const idealDistPerLeg = ideals.idealDistPerLeg; 
+  const currentCacheType = ignoreStart ? 'sg_excluded' : 'standard';
 
-  // --- Step 0 ---
-  let currentPaths = new Array(groups[0].length).fill(null);
-  for (let i = 0; i < groups[0].length; i++) {
-    const firstPoi = groups[0][i];
-    let initialCost = 0;
-    if (!ignoreStart) {
-      try {
-        const leg = await apiFunc(start, firstPoi, profile);
-        const diff = leg.distKm - idealDistPerLeg;
-        initialCost = diff * diff; 
-        
-        // ★Edge記録 (ID付き)
-        recordViterbiEdge({
-          t: 0,
-          fromId: getPoiId(start), toId: getPoiId(firstPoi), // ID
-          fromName: start.name,    toName: firstPoi.name,
-          distKm: leg.distKm, timeMin: leg.timeMin, energyKj: leg.energyKj,
-          cost: initialCost,
-          idealEnergyKj: ideals.idealEnergyPerLeg
-        });
+  // --- [Phase 1] 候補探索 (Candidates) ---
+  const tStart = performance.now();
+  const orsStart = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
+  const waitStart = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
 
-      } catch(e) {}
-    }
-    currentPaths[i] = {
-      picks: [firstPoi],
-      currentCost: initialCost,
-      lastNode: firstPoi,
-      valid: true
-    };
-  }
+  let candidates = null;
+  let cachedBreakdown = null;
 
-  // --- Step 1..T-1 ---
-  for (let t = 1; t < T; t++) {
-    if (options.onProgress) options.onProgress(t, T);
-
-    const nextGroup = groups[t];
-    const nextPaths = new Array(nextGroup.length).fill(null);
-
-    for (let j = 0; j < nextGroup.length; j++) {
-      const nextPoi = nextGroup[j];
-      let bestCost = Infinity;
-      let bestPath = null;
-
-      for (let i = 0; i < currentPaths.length; i++) {
-        const parent = currentPaths[i];
-        if (!parent || !parent.valid) continue;
-
-        try {
-          await new Promise(r => setTimeout(r, 20)); 
-          const leg = await apiFunc(parent.lastNode, nextPoi, profile);
-          const diff = leg.distKm - idealDistPerLeg;
-          const newCost = parent.currentCost + (diff * diff);
-
-          // ★Edge記録 (ID付き)
-          recordViterbiEdge({
-            t: t,
-            fromId: getPoiId(parent.lastNode), toId: getPoiId(nextPoi), // ID
-            fromName: parent.lastNode.name,    toName: nextPoi.name,
-            distKm: leg.distKm, timeMin: leg.timeMin, energyKj: leg.energyKj,
-            cost: (diff * diff),
-            idealEnergyKj: ideals.idealEnergyPerLeg
-          });
-
-          if (newCost < bestCost) {
-            bestCost = newCost;
-            bestPath = {
-              picks: [...parent.picks, nextPoi],
-              currentCost: newCost,
-              lastNode: nextPoi,
-              valid: true
-            };
-          }
-        } catch (e) {}
+  // 1. キャッシュ利用チェック
+  if (tryUseCache && window.__viterbiIntermediateCache) {
+      const c = window.__viterbiIntermediateCache;
+      if (c.type === currentCacheType) {
+          console.log(`[Viterbi] Using cached candidates (${c.type}).`);
+          candidates = c.candidates;
+          cachedBreakdown = c.breakdown; 
       }
-      nextPaths[j] = bestPath;
-    }
-    currentPaths = nextPaths;
   }
 
-  // Finalize (Goal Edge)
-  const candidates = currentPaths.filter(p => p && p.valid);
-  if (candidates.length > 0) {
+  // 2. キャッシュがない場合: 探索ループ実行
+  if (!candidates) {
+      const mergeStats = (s1, s2) => ({
+          dist:   [...(s1?.dist||[]),   ...(s2?.dist||[])],
+          time:   [...(s1?.time||[]),   ...(s2?.time||[])],
+          energy: [...(s1?.energy||[]), ...(s2?.energy||[])]
+      });
+      const mergeCoords = (c1, c2) => {
+          if (!c1 || !c1.length) return c2 || [];
+          if (!c2 || !c2.length) return c1;
+          return c1.concat(c2.slice(1));
+      };
+      const mergeSegments = (seg1, seg2) => [...(seg1||[]), ...(seg2||[])];
+
+      // Step 0
+      let currentPaths = new Array(groups[0].length).fill(null);
+      for (let i = 0; i < groups[0].length; i++) {
+        const firstPoi = groups[0][i];
+        let initialCost = 0;
+        let accStats={dist:[],time:[],energy:[]}, accCoords=[], accSegments=[];
+
+        if (!ignoreStart) {
+          try {
+            const leg = await apiFunc(start, firstPoi, profile);
+            const diff = leg.distKm - idealDistPerLeg;
+            initialCost = diff * diff; 
+            
+            if (usePathAccumulation || saveToCache) {
+                if(leg.rawStats) accStats = leg.rawStats;
+                if(leg.rawFeature) {
+                    accCoords = leg.rawFeature.geometry.coordinates;
+                    accSegments = leg.rawFeature.properties.segments;
+                }
+            }
+
+            // ★Edge記録 (Start -> POI)
+            recordEdge({
+              t: 0,
+              fromId: getPoiId(start), toId: getPoiId(firstPoi),
+              fromName: start.name,    toName: firstPoi.name,
+              distKm: leg.distKm, timeMin: leg.timeMin, energyKj: leg.energyKj,
+              cost: initialCost, idealEnergyKj: ideals.idealEnergyPerLeg
+            });
+
+          } catch(e) {}
+        }
+        currentPaths[i] = {
+          picks: [firstPoi],
+          currentCost: initialCost,
+          lastNode: firstPoi,
+          valid: true,
+          accStats, accCoords, accSegments
+        };
+      }
+
+      // Step 1..T-1
+      for (let t = 1; t < T; t++) {
+        if (options.onProgress) options.onProgress(t, T);
+        const nextGroup = groups[t];
+        const nextPaths = new Array(nextGroup.length).fill(null);
+        for (let j = 0; j < nextGroup.length; j++) {
+          const nextPoi = nextGroup[j];
+          let bestCost = Infinity, bestPath = null;
+          for (let i = 0; i < currentPaths.length; i++) {
+            const parent = currentPaths[i];
+            if (!parent || !parent.valid) continue;
+            try {
+              await new Promise(r => setTimeout(r, 20)); 
+              const leg = await apiFunc(parent.lastNode, nextPoi, profile);
+              const diff = leg.distKm - idealDistPerLeg;
+              const newCost = parent.currentCost + (diff * diff);
+
+              // ★Edge記録 (POI -> POI)
+              recordEdge({
+                t: t,
+                fromId: getPoiId(parent.lastNode), toId: getPoiId(nextPoi),
+                fromName: parent.lastNode.name,    toName: nextPoi.name,
+                distKm: leg.distKm, timeMin: leg.timeMin, energyKj: leg.energyKj,
+                cost: (diff * diff), idealEnergyKj: ideals.idealEnergyPerLeg
+              });
+
+              if (newCost < bestCost) {
+                bestCost = newCost;
+                bestPath = {
+                  picks: [...parent.picks, nextPoi],
+                  currentCost: newCost,
+                  lastNode: nextPoi,
+                  valid: true,
+                };
+                if (usePathAccumulation || saveToCache) {
+                   bestPath.accStats = mergeStats(parent.accStats, leg.rawStats);
+                   bestPath.accCoords = mergeCoords(parent.accCoords, leg.rawFeature?.geometry?.coordinates);
+                   bestPath.accSegments = mergeSegments(parent.accSegments, leg.rawFeature?.properties?.segments);
+                }
+              }
+            } catch (e) {}
+          }
+          nextPaths[j] = bestPath;
+        }
+        currentPaths = nextPaths;
+      }
+      candidates = currentPaths.filter(p => p && p.valid);
+  }
+
+  // --- Phase 1 終了時点の計測 ---
+  const tPhase1End = performance.now();
+  const orsPhase1End = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
+  const waitPhase1End = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
+
+  // キャッシュ保存用データ (Phase 1 のコストのみ)
+  let phase1Breakdown = cachedBreakdown; 
+  if (!phase1Breakdown) {
+      phase1Breakdown = {
+          ors: orsPhase1End - orsStart,
+          wait: waitPhase1End - waitStart,
+          time: tPhase1End - tStart
+      };
+  }
+
+  // キャッシュ保存
+  if (saveToCache && candidates) {
+      window.__viterbiIntermediateCache = {
+          type: currentCacheType,
+          candidates: candidates,
+          breakdown: phase1Breakdown 
+      };
+      console.log(`[Viterbi] Candidates & breakdown cached (${currentCacheType}).`);
+  }
+
+
+  // --- [Phase 2] 仕上げ (Finalize / Rerank / Draw) ---
+  const finalResults = [];
+  
+  // Phase 2 開始
+  const tPhase2Start = performance.now();
+  const orsPhase2Start = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
+  const waitPhase2Start = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
+
+  if (usePathAccumulation && candidates.length > 0) {
+    // A. パス累積モード (通常、順位決定に関わるのでDecisionに含む)
     for (const cand of candidates) {
         try { 
           const leg = await apiFunc(cand.lastNode, goal, profile);
-          // ★Edge記録 (ID付き - Goal)
-          recordViterbiEdge({
+          
+          // ★Edge記録 (Goal)
+          recordEdge({
             t: T,
-            fromId: getPoiId(cand.lastNode), toId: getPoiId(goal), // ID
+            fromId: getPoiId(cand.lastNode), toId: getPoiId(goal),
             fromName: cand.lastNode.name,    toName: goal.name,
             distKm: leg.distKm, timeMin: leg.timeMin, energyKj: leg.energyKj,
-            cost: 0,
-            idealEnergyKj: ideals.idealEnergyPerLeg
+            cost: 0, idealEnergyKj: ideals.idealEnergyPerLeg
           });
-        } catch(e) {}
+
+          const mergeStats = (s1, s2) => ({
+             dist:   [...(s1?.dist||[]),   ...(s2?.dist||[])],
+             time:   [...(s1?.time||[]),   ...(s2?.time||[])],
+             energy: [...(s1?.energy||[]), ...(s2?.energy||[])]
+          });
+          const baseStats = cand.accStats || {dist:[],time:[],energy:[]};
+          const baseCoords = cand.accCoords || [];
+          const baseSegs = cand.accSegments || [];
+          const finalStats = mergeStats(baseStats, leg.rawStats);
+          const finalCoords = (baseCoords.length) ? baseCoords.concat((leg.rawFeature?.geometry?.coordinates||[]).slice(1)) : leg.rawFeature?.geometry?.coordinates;
+          const finalSegments = [...baseSegs, ...(leg.rawFeature?.properties?.segments||[])];
+          let sumSq=0, count=0;
+          finalSegments.forEach(seg => {
+             const d=(Number(seg.distance)||0)/1000;
+             sumSq += Math.pow(d - idealDistPerLeg, 2);
+             count++;
+          });
+          const totalMse = (count>0) ? sumSq/count : Infinity;
+          const constructedFeature = {
+              type: "Feature", properties: { summary: { distance: finalSegments.reduce((s,x)=>s+(x.distance||0),0), duration: finalSegments.reduce((s,x)=>s+(x.duration||0),0) }, segments: finalSegments },
+              geometry: { type: "LineString", coordinates: finalCoords }
+          };
+          finalResults.push({
+             rank: 0, score: totalMse, displayScore: totalMse,
+             poi_names: cand.picks.map(p => p.name).join(' -> '),
+             poi_latlngs: cand.picks.map(p => `${p.lat},${p.lon}`).join(' | '),
+             sigmaEnergy: stdDev(finalStats.energy), dist: finalStats.dist, stats: finalStats,
+             picks: cand.picks, feature: constructedFeature 
+          });
+        } catch(e) { console.error(e); }
     }
+  } 
+  else if (candidates.length > 0) {
+     // B. 従来モード (再ランク or SG排除)
+     // Goal区間の計算 (ignoreGoalEdgeならスキップ)
+     if (!ignoreGoalEdge) {
+         for (const cand of candidates) {
+             try { 
+                 const leg = await apiFunc(cand.lastNode, goal, profile); 
+                 // ★Edge記録 (Goal)
+                 recordEdge({
+                    t: T,
+                    fromId: getPoiId(cand.lastNode), toId: getPoiId(goal),
+                    fromName: cand.lastNode.name,    toName: goal.name,
+                    distKm: leg.distKm, timeMin: leg.timeMin, energyKj: leg.energyKj,
+                    cost: 0, idealEnergyKj: ideals.idealEnergyPerLeg
+                 });
+             } catch(e) {}
+         }
+     }
+     const ranked = await finalizeAndRank(start, goal, candidates, idealDistPerLeg, profile, { 
+        includeGoalScore: !ignoreGoalInRank,
+        useAccumulatedCost: ignoreGoalInRank,
+        onlyInternal: ignoreGoalInRank 
+     });
+     ranked.forEach(r => finalResults.push(r));
   }
 
-  return finalizeAndRank(start, goal, candidates, idealDistPerLeg, profile, { 
-    includeGoalScore: !ignoreGoalInRank,
-    useAccumulatedCost: ignoreGoalInRank 
-  });
+  finalResults.sort((a, b) => (a.score ?? 1e9) - (b.score ?? 1e9));
+  finalResults.forEach((r, idx) => r.rank = idx + 1);
+
+  // --- 最終計測 & コスト振り分け ---
+  const tEnd = performance.now();
+  const orsEnd = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
+  const waitEnd = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
+
+  // Phase 2 のコスト
+  const p2Ors  = orsEnd - orsPhase2Start;
+  const p2Wait = waitEnd - waitPhase2Start;
+  const p2Time = tEnd - tPhase2Start;
+
+  // ★振り分けロジック
+  // Algo 6 (SG排除) -> ignoreGoalInRank=true -> Phase 2は「順位に影響しない描画」 -> Draw
+  // Algo 7 (再ランク) -> ignoreGoalInRank=false -> Phase 2は「真のスコア計算」 -> Search
+  
+  let finalSearchOrs, finalSearchWait, finalSearchTime;
+  let finalDrawOrs, finalDrawWait, finalDrawTime;
+
+  if (ignoreGoalInRank === true) {
+      // 6. SG排除: Phase 1だけが探索、Phase 2は描画
+      finalSearchOrs  = phase1Breakdown.ors;
+      finalSearchWait = phase1Breakdown.wait;
+      finalSearchTime = phase1Breakdown.time;
+      
+      finalDrawOrs  = p2Ors;
+      finalDrawWait = p2Wait;
+      finalDrawTime = p2Time;
+  } else {
+      // 7. 再ランク (他): Phase 1もPhase 2も「決定」に必要なコスト
+      finalSearchOrs  = phase1Breakdown.ors + p2Ors;
+      finalSearchWait = phase1Breakdown.wait + p2Wait;
+      finalSearchTime = phase1Breakdown.time + p2Time;
+      
+      finalDrawOrs  = 0;
+      finalDrawWait = 0;
+      finalDrawTime = 0;
+  }
+
+  // 戻り値に内訳を添付
+  finalResults._breakdown = {
+      searchOrs:  finalSearchOrs,
+      searchWait: finalSearchWait,
+      searchTime: finalSearchTime,
+      
+      drawOrs:  finalDrawOrs,
+      drawWait: finalDrawWait,
+      drawTime: finalDrawTime,
+
+      isCached: !!cachedBreakdown
+  };
+
+  return finalResults;
 }
 
 /**
