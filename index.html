@@ -3069,6 +3069,9 @@ async function showLinearComboRoute(row){
    ========================================================== */
 
 // 1. アルゴリズム比較用: データ蓄積 (総当たり全件対応 & 理想距離対応)
+/* ==========================================================
+   【修正版】データ蓄積 (8～15番も全件出力に対応)
+   ========================================================== */
 function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls, overpassCalls){
   if (!Array.isArray(resultList) || !resultList.length) return;
   if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
@@ -3080,20 +3083,24 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
 
   let outputList = sorted;
 
-  // ★修正ポイント1: 新しい総当たりID 'dbg_bf' を判定に追加
-  // これにより、総当たりの時は3件に絞らず全件出力されます
+  // ★修正ポイント: 全件出力(isFullOutput)の対象アルゴリズムを追加
+  // "geo_" (8-11番) や "rerank_" (12-15番) も対象にする
   const isFullOutput = (
     algoCode === 'bruteforce' || 
     algoCode === 'dbg_bf' || 
     algoCode === 'linear' || 
-    algoCode === 'dbg_linear'
+    algoCode === 'dbg_linear' ||
+    algoCode.startsWith('geo_') ||    // ★追加: 幾何学探索(8-11)
+    algoCode.startsWith('rerank_')    // ★追加: 再ランク(12-15)
   );
 
   if (!isFullOutput) {
+    // それ以外の既存アルゴリズム(2-7)は、画面が埋まらないようTop3のままにする
+    // (必要であればここも全件にしてOKです)
     outputList = sorted.slice(0, 3);
   }
 
-  // ★修正ポイント2: 理想値を取得
+  // 理想値を取得
   const ideals = (typeof getIdealPerLegs === 'function') ? getIdealPerLegs() : { idealDistPerLeg: 0 };
 
   outputList.forEach((r, idx)=>{
@@ -3106,7 +3113,6 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
     if (Array.isArray(poiList[0])) poiList = poiList.flat().filter(Boolean);
 
     const poiNames = poiList.map(p => p.name || 'POI').join(' -> ');
-    // ID取得 (関数がある場合のみ)
     const poiIds   = (typeof getPoiId === 'function') ? poiList.map(p => getPoiId(p)).join(' -> ') : '';
     
     const poiLatLngs = poiList
@@ -3129,7 +3135,6 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       orsCalls: orsCalls ?? 0,
       overpassCalls: overpassCalls ?? 0,
       
-      // ★修正ポイント3: 理想距離を保存
       idealDistKm: ideals.idealDistPerLeg,
 
       poiNames,
@@ -3143,9 +3148,6 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
   
 /* ==========================================================
    【修正版】結果表示関数 (改行・整形対応)
-   ========================================================== */
-/* ==========================================================
-   【修正版】結果リスト表示 (改行・整形対応)
    ========================================================== */
 function showAlgoListInPanel(panel, list, algoCode){
   if (!panel) return;
