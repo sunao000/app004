@@ -4936,12 +4936,13 @@ async function finalizeAndRank(start, goal, candidates, idealDist, profile, opti
    UI/機能はそのままに、共通処理をまとめて記述量を削減
    ===================================================================== */
 /* ==========================================================
-   【修正版】幾何学ソルバー (トリガー位置取得の不具合修正済み)
+   【修正版】幾何学ソルバー (TopN修正済み)
    ========================================================== */
 function solveGeometricGeneric(start, goal, groups, options = {}) {
   const usePythagoras = options.usePythagoras === true;
   const beamWidth = options.beamWidth || 0;
-  const topN = options.topN || 5; 
+  // ★ TopN の受け取りを確実にする
+  const topN = (options.topN !== undefined) ? options.topN : 5;
   
   const uiW = document.getElementById('geoWeight');
   const W = uiW ? (Number(uiW.value) || 10) : 10;
@@ -4958,14 +4959,10 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
     const pois = Array.isArray(groupData.pois) ? groupData.pois : (Array.isArray(groupData) ? groupData : []);
     const nextPathsCandidates = [];
 
-    // ★★★ 修正箇所: トリガー地点の距離取得ロジック ★★★
     let triggerCumD = 0;
-    // 1. 引数の中に rest 情報があればそれを使う
     if (groupData.rest && Number.isFinite(groupData.rest.routeD)) {
         triggerCumD = groupData.rest.routeD;
-    } 
-    // 2. 無ければグローバル変数から取得 (これが重要)
-    else if (window.restGroups && window.restGroups[t] && window.restGroups[t].rest) {
+    } else if (window.restGroups && window.restGroups[t] && window.restGroups[t].rest) {
         triggerCumD = window.restGroups[t].rest.routeD || 0;
     }
 
@@ -4979,20 +4976,14 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
       const hasProj = (p._proj && Number.isFinite(p._proj.cumD));
       
       if (usePythagoras || !hasProj) {
-        // [三平方 / フォールバック]
         const c = p.distFromTriggerM ?? p._proj?.distToPathM ?? 0;
         const b = p.perpDistM ?? p._proj?.perpM ?? 0;
         perpM = b;
-
         let a = 0;
         if (c > b) a = Math.sqrt(c*c - b*b);
-        a *= 1.1; // 補正
-        
-        // ★修正された triggerCumD を使って計算
+        a *= 1.1; 
         currentCumD = triggerCumD + a; 
-
       } else {
-        // [射影モード (正常)]
         currentCumD = p._proj.cumD;
         perpM = p._proj.perpM ?? 0;
       }
@@ -5000,18 +4991,14 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
       let bestForThisPoi = { cost: Infinity, parent: null };
 
       for (const parent of currentPaths) {
-        // 区間距離
         const distSeg = Math.abs(currentCumD - parent.lastCumD);
-        
         let costDist = 0;
         if (idealLegM > 0) {
             const distErrKm = (distSeg - idealLegM) / 1000;
             costDist = distErrKm * distErrKm;
         }
-
         const perpKm = perpM / 1000;
         const costPerp = perpKm * perpKm;
-
         const legCost = costDist + (W * costPerp);
         const totalCost = parent.cost + legCost;
 
@@ -5047,7 +5034,6 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
     }
   }
 
-  // --- Finalize ---
   const goalCumD = (totalD > 0) ? totalD : (currentPaths[0]?.lastCumD || 0);
   
   const results = currentPaths.map(path => {
@@ -5057,9 +5043,7 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
           const distErrKm = (distSeg - idealLegM) / 1000;
           costDist = distErrKm * distErrKm;
       }
-      
       const finalCost = path.cost + costDist;
-
       return {
           picks: path.picks,
           geoScore: finalCost,
@@ -5069,21 +5053,23 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
   });
 
   results.sort((a, b) => a.geoScore - b.geoScore);
+  
+  // ★ここで確実に topN 件返す
   return results.slice(0, topN);
 }
 
 /* ==========================================================
-   【新規追加】幾何学ラッパー (予選通過枠を拡大)
+   【修正版】幾何学ラッパー (予選枠拡大)
    ========================================================== */
 async function runGeometricWrapper(start, goal, groups, profile, options = {}) {
-    // ★修正ポイント: 候補数を 5 から 20 に増やす
+    // ★ここを 20 に設定
     const CANDIDATE_COUNT = 20; 
 
-    // 1. 幾何学計算で候補を選出 (API: 0回)
+    // 1. 幾何学計算 (APIなし)
     const candidates = solveGeometricGeneric(start, goal, groups, {
         usePythagoras: options.usePythagoras,
         beamWidth: options.beamWidth,
-        topN: CANDIDATE_COUNT 
+        topN: CANDIDATE_COUNT // ← これが solveGeometricGeneric に渡る
     });
 
     if (options.doRerank) {
@@ -5099,7 +5085,7 @@ async function runGeometricWrapper(start, goal, groups, profile, options = {}) {
 
         ranked._breakdown = {
             searchOrs: 0, searchWait: 0, searchTime: 0, 
-            drawOrs: ranked.length, // 再ランクした本数分
+            drawOrs: ranked.length, 
             drawWait: 0, drawTime: 0,
             isCached: false
         };
