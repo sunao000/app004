@@ -4936,7 +4936,7 @@ async function finalizeAndRank(start, goal, candidates, idealDist, profile, opti
    UI/機能はそのままに、共通処理をまとめて記述量を削減
    ===================================================================== */
 /* ==========================================================
-   【新規追加】幾何学ソルバー (NaN対策・射影フォールバック対応)
+   【修正版】幾何学ソルバー (トリガー位置取得の不具合修正済み)
    ========================================================== */
 function solveGeometricGeneric(start, goal, groups, options = {}) {
   const usePythagoras = options.usePythagoras === true;
@@ -4946,7 +4946,6 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
   const uiW = document.getElementById('geoWeight');
   const W = uiW ? (Number(uiW.value) || 10) : 10;
 
-  // 理想距離の計算 (データがない場合は安全策で0除算回避)
   const totalD = Number(window.__cumTotals?.D) || 0;
   const R = groups.length + 1;
   const idealLegM = (totalD > 0) ? (totalD / R) : 0;
@@ -4959,9 +4958,16 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
     const pois = Array.isArray(groupData.pois) ? groupData.pois : (Array.isArray(groupData) ? groupData : []);
     const nextPathsCandidates = [];
 
-    // トリガー地点の累積距離 (三平方モードやフォールバック用)
-    const triggerCumD = (groupData.rest && Number.isFinite(groupData.rest.routeD)) 
-                        ? groupData.rest.routeD : 0;
+    // ★★★ 修正箇所: トリガー地点の距離取得ロジック ★★★
+    let triggerCumD = 0;
+    // 1. 引数の中に rest 情報があればそれを使う
+    if (groupData.rest && Number.isFinite(groupData.rest.routeD)) {
+        triggerCumD = groupData.rest.routeD;
+    } 
+    // 2. 無ければグローバル変数から取得 (これが重要)
+    else if (window.restGroups && window.restGroups[t] && window.restGroups[t].rest) {
+        triggerCumD = window.restGroups[t].rest.routeD || 0;
+    }
 
     for (let j = 0; j < pois.length; j++) {
       const p = pois[j];
@@ -4970,9 +4976,6 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
       let currentCumD = 0; 
       let perpM = 0;       
 
-      // ★データ取得ロジック (安全策付き)
-      // 1. 三平方モードなら常に計算
-      // 2. 射影モードでもデータ欠損(NaN)なら三平方で代用
       const hasProj = (p._proj && Number.isFinite(p._proj.cumD));
       
       if (usePythagoras || !hasProj) {
@@ -4984,6 +4987,8 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
         let a = 0;
         if (c > b) a = Math.sqrt(c*c - b*b);
         a *= 1.1; // 補正
+        
+        // ★修正された triggerCumD を使って計算
         currentCumD = triggerCumD + a; 
 
       } else {
@@ -4998,7 +5003,6 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
         // 区間距離
         const distSeg = Math.abs(currentCumD - parent.lastCumD);
         
-        // ★理想距離との差 (totalDが未取得なら区間0として扱う安全策)
         let costDist = 0;
         if (idealLegM > 0) {
             const distErrKm = (distSeg - idealLegM) / 1000;
@@ -5039,7 +5043,6 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
       nextPathsCandidates.sort((a, b) => a.cost - b.cost);
       currentPaths = nextPathsCandidates.slice(0, beamWidth);
     } else {
-      // 候補が1つもないと次へ進めないので、空でも許容するか、あるいはここで切れる
       currentPaths = nextPathsCandidates; 
     }
   }
