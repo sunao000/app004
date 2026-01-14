@@ -5048,8 +5048,7 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
    【修正版】幾何学ラッパー (予選枠拡大)
    ========================================================== */
 async function runGeometricWrapper(start, goal, groups, profile, options = {}) {
-    // ★ここを 20 に設定
-    const CANDIDATE_COUNT = 20; 
+    const CANDIDATE_COUNT = 50; 
 
     // 1. 幾何学計算 (APIなし)
     const candidates = solveGeometricGeneric(start, goal, groups, {
@@ -5276,9 +5275,6 @@ function calcDistMseFromFeature(feature, idealDistPerLeg) {
 
   return sumSq / segments.length;
 }
-/* ==========================================================
-   【追加機能】POI ID生成 & CSV出力 (ID対応版)
-   ========================================================== */
 
 /* ==========================================================
    【修正統合版】データ出力・ログ記録関数セット
