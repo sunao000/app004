@@ -4934,33 +4934,30 @@ async function finalizeAndRank(start, goal, candidates, idealDist, profile, opti
    UI/機能はそのままに、共通処理をまとめて記述量を削減
    ===================================================================== */
 /* ==========================================================
-   【新規追加】幾何学ソルバー (APIなし・計算のみ)
+   【修正版】幾何学ソルバー (NaN対策・射影フォールバック対応)
    ========================================================== */
 function solveGeometricGeneric(start, goal, groups, options = {}) {
-  // オプション
-  const usePythagoras = options.usePythagoras === true; // true=三平方, false=射影データ
-  const beamWidth = options.beamWidth || 0; // 0=Viterbi, >0=BeamSearch
+  const usePythagoras = options.usePythagoras === true;
+  const beamWidth = options.beamWidth || 0;
   const topN = options.topN || 5; 
   
-  // UIから重み取得
   const uiW = document.getElementById('geoWeight');
   const W = uiW ? (Number(uiW.value) || 10) : 10;
 
-  const ideals = getIdealPerLegs();
-  const idealLegM = ideals.idealDistPerLeg * 1000; // m換算
+  // 理想距離の計算 (データがない場合は安全策で0除算回避)
+  const totalD = Number(window.__cumTotals?.D) || 0;
+  const R = groups.length + 1;
+  const idealLegM = (totalD > 0) ? (totalD / R) : 0;
 
-  // スタート地点 (cumD=0)
   const startObj = { picks: [], cost: 0, lastCumD: 0, valid: true };
   let currentPaths = [startObj];
 
-  // --- 探索ループ ---
   for (let t = 0; t < groups.length; t++) {
     const groupData = groups[t]; 
     const pois = Array.isArray(groupData.pois) ? groupData.pois : (Array.isArray(groupData) ? groupData : []);
     const nextPathsCandidates = [];
 
-    // 現在のグループのトリガー地点(基準点)の累積距離
-    // (groupData.rest.routeD に入っている前提)
+    // トリガー地点の累積距離 (三平方モードやフォールバック用)
     const triggerCumD = (groupData.rest && Number.isFinite(groupData.rest.routeD)) 
                         ? groupData.rest.routeD : 0;
 
@@ -4968,38 +4965,44 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
       const p = pois[j];
       if (!p) continue;
       
-      // --- [距離推定] ---
       let currentCumD = 0; 
       let perpM = 0;       
 
-      if (usePythagoras) {
-        // ★三平方モード: 斜辺(c)と乖離(b)から底辺(a)を推定
+      // ★データ取得ロジック (安全策付き)
+      // 1. 三平方モードなら常に計算
+      // 2. 射影モードでもデータ欠損(NaN)なら三平方で代用
+      const hasProj = (p._proj && Number.isFinite(p._proj.cumD));
+      
+      if (usePythagoras || !hasProj) {
+        // [三平方 / フォールバック]
         const c = p.distFromTriggerM ?? p._proj?.distToPathM ?? 0;
         const b = p.perpDistM ?? p._proj?.perpM ?? 0;
         perpM = b;
 
         let a = 0;
         if (c > b) a = Math.sqrt(c*c - b*b);
-        a *= 1.1; // 補正係数(道は曲がっているので)
-
+        a *= 1.1; // 補正
         currentCumD = triggerCumD + a; 
+
       } else {
-        // ★射影モード: 既存データを使用
-        currentCumD = p._proj?.cumD ?? 0;
-        perpM = p._proj?.perpM ?? 0;
+        // [射影モード (正常)]
+        currentCumD = p._proj.cumD;
+        perpM = p._proj.perpM ?? 0;
       }
 
-      // --- [コスト計算] ---
-      // Viterbi用の一時変数 (このPOIへの最小コスト)
       let bestForThisPoi = { cost: Infinity, parent: null };
 
       for (const parent of currentPaths) {
-        // 区間距離の理想との差
+        // 区間距離
         const distSeg = Math.abs(currentCumD - parent.lastCumD);
-        const distErrKm = (distSeg - idealLegM) / 1000;
-        const costDist = distErrKm * distErrKm;
+        
+        // ★理想距離との差 (totalDが未取得なら区間0として扱う安全策)
+        let costDist = 0;
+        if (idealLegM > 0) {
+            const distErrKm = (distSeg - idealLegM) / 1000;
+            costDist = distErrKm * distErrKm;
+        }
 
-        // 乖離コスト
         const perpKm = perpM / 1000;
         const costPerp = perpKm * perpKm;
 
@@ -5007,7 +5010,6 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
         const totalCost = parent.cost + legCost;
 
         if (beamWidth > 0) {
-          // Beam: 全候補をリストへ
           nextPathsCandidates.push({
             picks: [...parent.picks, p],
             cost: totalCost,
@@ -5015,14 +5017,12 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
             valid: true
           });
         } else {
-          // Viterbi: このPOIへのベストのみ残す
           if (totalCost < bestForThisPoi.cost) {
             bestForThisPoi = { cost: totalCost, parent: parent };
           }
         }
       }
 
-      // Viterbiの場合の確定
       if (beamWidth === 0 && bestForThisPoi.parent) {
         nextPathsCandidates.push({
           picks: [...bestForThisPoi.parent.picks, p],
@@ -5033,22 +5033,26 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
       }
     }
 
-    // --- [絞り込み] ---
     if (beamWidth > 0) {
       nextPathsCandidates.sort((a, b) => a.cost - b.cost);
       currentPaths = nextPathsCandidates.slice(0, beamWidth);
     } else {
+      // 候補が1つもないと次へ進めないので、空でも許容するか、あるいはここで切れる
       currentPaths = nextPathsCandidates; 
     }
   }
 
-  // --- Finalize (Goal) ---
-  const goalCumD = window.__cumTotals?.D || 0;
+  // --- Finalize ---
+  // totalD が 0 の場合(未取得)は、最後のPOIの距離をゴールとする
+  const goalCumD = (totalD > 0) ? totalD : (currentPaths[0]?.lastCumD || 0);
   
   const results = currentPaths.map(path => {
       const distSeg = Math.abs(goalCumD - path.lastCumD);
-      const distErrKm = (distSeg - idealLegM) / 1000;
-      const costDist = distErrKm * distErrKm;
+      let costDist = 0;
+      if (idealLegM > 0) {
+          const distErrKm = (distSeg - idealLegM) / 1000;
+          costDist = distErrKm * distErrKm;
+      }
       
       const finalCost = path.cost + costDist;
 
@@ -5056,7 +5060,7 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
           picks: path.picks,
           geoScore: finalCost,
           score: finalCost,
-          stats: { dist:[], time:[], energy:[] } // API未使用時は空
+          stats: { dist:[], time:[], energy:[] }
       };
   });
 
