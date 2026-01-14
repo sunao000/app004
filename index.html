@@ -257,30 +257,30 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 </pre>
 
 <div style="display:flex; flex-direction:column; gap:4px; margin:8px 0; padding:8px; background:#f9f9f9; border:1px solid #ddd; border-radius:4px;">
-<div style="display:flex; flex-direction:column; gap:4px; margin:8px 0; padding:8px; background:#f9f9f9; border:1px solid #ddd; border-radius:4px;">
- <div style="font-weight:bold; margin-bottom:4px; color:#555;">比較するアルゴリズム</div>
-<label><input type="checkbox" id="dbg_bf" checked> 1. 総当たり (Ground Truth)</label>
-<label><input type="checkbox" id="dbg_vit_pure" checked> 2. 純粋Viterbi (高速)</label>
-<label><input type="checkbox" id="dbg_vit_pure_rerank" checked> 3. 純粋Viterbi + 再ランク</label>
-<label><input type="checkbox" id="dbg_linear" checked> 4. 直線比較 (Zero API)</label>
-<label><input type="checkbox" id="dbg_beam" checked> 5. 純粋ビームサーチ (Width=5)</label>
-<label><input type="checkbox" id="dbg_vit_sg_excl" checked> 6. SG排除・純粋Viterbi</label>
-<label><input type="checkbox" id="dbg_vit_sg_excl_rerank" checked> 7. SG排除・純粋Viterbi + 再ランク</label>
-<div style="border-top:1px dashed #ccc; margin:4px 0;"></div>
-  <small style="color:#007700; font-weight:bold;" checked>幾何学探索 (API節約・爆速)</small>
-  <label><input type="checkbox" id="geo_vit_proj" checked> 8. 幾何Viterbi (射影)</label>
-  <label><input type="checkbox" id="geo_beam_proj" checked> 9. 幾何Beam(幅5) (射影)</label>
-  <label><input type="checkbox" id="geo_vit_pyth" checked> 10. 幾何Viterbi (三平方)</label>
-  <label><input type="checkbox" id="geo_beam_pyth checked"> 11. 幾何Beam(幅5) (三平方)</label>
+  <div style="font-weight:bold; margin-bottom:4px; color:#555;">比較するアルゴリズム</div>
+  
+  <label><input type="checkbox" id="dbg_bf" checked> 1. 総当たり (Ground Truth)</label>
+  <label><input type="checkbox" id="dbg_vit_pure" checked> 2. 純粋Viterbi (高速)</label>
+  <label><input type="checkbox" id="dbg_vit_pure_rerank"> 3. 純粋Viterbi + 再ランク</label>
+  <label><input type="checkbox" id="dbg_linear"> 4. 直線比較 (Zero API)</label>
+  <label><input type="checkbox" id="dbg_beam"> 5. 純粋ビームサーチ (Width=5)</label>
+  <label><input type="checkbox" id="dbg_vit_sg_excl" checked> 6. SG排除・純粋Viterbi</label>
+  <label><input type="checkbox" id="dbg_vit_sg_excl_rerank" checked> 7. SG排除+再ランク</label>
+
+  <div style="border-top:1px dashed #ccc; margin:4px 0;"></div>
+  <small style="color:#007700; font-weight:bold;">幾何学探索 (API節約・爆速)</small>
+  <label><input type="checkbox" id="geo_vit_proj"> 8. 幾何Viterbi (射影)</label>
+  <label><input type="checkbox" id="geo_beam_proj"> 9. 幾何Beam(幅5) (射影)</label>
+  <label><input type="checkbox" id="geo_vit_pyth"> 10. 幾何Viterbi (三平方)</label>
+  <label><input type="checkbox" id="geo_beam_pyth"> 11. 幾何Beam(幅5) (三平方)</label>
   
   <div style="border-top:1px dashed #ccc; margin:4px 0;"></div>
-  <small style="color:#aa0000; font-weight:bold;" checked>幾何学探索 + API再ランク (高精度・推奨)</small>
-  <label><input type="checkbox" id="rerank_vit_proj" checked> 12. 再ランク (8:射影Vit)</label>
-  <label><input type="checkbox" id="rerank_beam_proj" checked> 13. 再ランク (9:射影Beam)</label>
+  <small style="color:#aa0000; font-weight:bold;">幾何学探索 + API再ランク (高精度・推奨)</small>
+  <label><input type="checkbox" id="rerank_vit_proj"> 12. 再ランク (8:射影Vit)</label>
+  <label><input type="checkbox" id="rerank_beam_proj"> 13. 再ランク (9:射影Beam)</label>
   <label><input type="checkbox" id="rerank_vit_pyth" checked> 14. 再ランク (10:三平方Vit)</label>
   <label><input type="checkbox" id="rerank_beam_pyth" checked> 15. 再ランク (11:三平方Beam)</label>
-</div>
-
+  </div>
 <!-- サマリー -->
 <div id="summary">
   <div id="routeInfo">未計算</div>
@@ -4934,7 +4934,7 @@ async function finalizeAndRank(start, goal, candidates, idealDist, profile, opti
    UI/機能はそのままに、共通処理をまとめて記述量を削減
    ===================================================================== */
 /* ==========================================================
-   【修正版】幾何学ソルバー (NaN対策・射影フォールバック対応)
+   【新規追加】幾何学ソルバー (NaN対策・射影フォールバック対応)
    ========================================================== */
 function solveGeometricGeneric(start, goal, groups, options = {}) {
   const usePythagoras = options.usePythagoras === true;
@@ -5043,7 +5043,6 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
   }
 
   // --- Finalize ---
-  // totalD が 0 の場合(未取得)は、最後のPOIの距離をゴールとする
   const goalCumD = (totalD > 0) ? totalD : (currentPaths[0]?.lastCumD || 0);
   
   const results = currentPaths.map(path => {
@@ -5069,24 +5068,21 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
 }
 
 /* ==========================================================
-   【修正版】幾何学ラッパー (予選通過枠を拡大)
+   【新規追加】幾何学ラッパー (予選通過枠を拡大)
    ========================================================== */
 async function runGeometricWrapper(start, goal, groups, profile, options = {}) {
     // ★修正ポイント: 候補数を 5 から 20 に増やす
-    // これにより「本当は良いルート」が予選落ちするのを防ぎます
     const CANDIDATE_COUNT = 20; 
 
     // 1. 幾何学計算で候補を選出 (API: 0回)
     const candidates = solveGeometricGeneric(start, goal, groups, {
         usePythagoras: options.usePythagoras,
         beamWidth: options.beamWidth,
-        topN: CANDIDATE_COUNT // ← ここに定数を渡す
+        topN: CANDIDATE_COUNT 
     });
 
     if (options.doRerank) {
         // --- 再ランクあり ---
-        // 選ばれた20本に対してAPIを実行 (API: 20回)
-        // ※総当たりの125回などに比べれば十分少ない
         const ideals = getIdealPerLegs();
         const ranked = await finalizeAndRank(
             start, goal, 
@@ -5114,22 +5110,35 @@ async function runGeometricWrapper(start, goal, groups, profile, options = {}) {
         return candidates;
     }
 }
+
 /* ===== 【修正版】アルゴリズム定義 (1-15番対応) ===== */
 const ALGO_CONFIG = [
-  // --- 既存 ---
+  // 1. 総当たり
   { id: 'dbg_bf', label: '1. 総当たり', func: runBruteforceOnce },
+
+  // 2. 純粋Viterbi (高速)
   { id: 'dbg_vit_pure', label: '2. 純粋Viterbi (高速)', 
     func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { usePathAccumulation: true, saveToCache: true, onProgress: cb }) 
   },
+
+  // 3. 純粋Viterbi + 再ランク
   { id: 'dbg_vit_pure_rerank', label: '3. 純粋Viterbi + 再ランク', 
     func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { usePathAccumulation: false, tryUseCache: true, onProgress: cb }) 
   },
+
+  // 4. 直線
   { id: 'dbg_linear', label: '4. 直線比較', type: 'linear' }, 
+
+  // 5. ビーム
   { id: 'dbg_beam', label: '5. 純粋ビーム', 
     func: (s,g,gr,p, cb) => solveBeamSearch(s,g,gr,p, { beamWidth:5, onProgress: cb }) },
+
+  // 6. SG排除Vit
   { id: 'dbg_vit_sg_excl', label: '6. SG排除・純粋Viterbi', 
     func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { ignoreStart:true, ignoreGoalInRank:true, ignoreGoalEdge: true, saveToCache: true, onProgress: cb }) 
   },
+
+  // 7. SG排除+再ランク
   { id: 'dbg_vit_sg_excl_rerank', label: '7. SG排除+再ランク', 
     func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { ignoreStart:true, ignoreGoalEdge: true, tryUseCache: true, onProgress: cb }) 
   },
@@ -5148,7 +5157,7 @@ const ALGO_CONFIG = [
     func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: true, beamWidth: 5, doRerank: false }) 
   },
 
-  // --- 新規追加: 幾何学 + 再ランク (API 5回) ---
+  // --- 新規追加: 幾何学 + 再ランク (API 20回) ---
   { id: 'rerank_vit_proj', label: '12. 再ランク (8:幾何Vit/射影)', 
     func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: false, beamWidth: 0, doRerank: true }) 
   },
