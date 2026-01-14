@@ -5088,7 +5088,9 @@ async function runGeometricWrapper(start, goal, groups, profile, options = {}) {
     }
 }
 
-/* ===== 【修正版】アルゴリズム定義 (1-15番対応) ===== */
+/* ==========================================================
+   【修正版】アルゴリズム定義 (ビーム幅拡大版)
+   ========================================================== */
 const ALGO_CONFIG = [
   // 1. 総当たり
   { id: 'dbg_bf', label: '1. 総当たり', func: runBruteforceOnce },
@@ -5106,9 +5108,9 @@ const ALGO_CONFIG = [
   // 4. 直線
   { id: 'dbg_linear', label: '4. 直線比較', type: 'linear' }, 
 
-  // 5. ビーム
-  { id: 'dbg_beam', label: '5. 純粋ビーム', 
-    func: (s,g,gr,p, cb) => solveBeamSearch(s,g,gr,p, { beamWidth:5, onProgress: cb }) },
+  // 5. 純粋ビーム (ここも広げておくと比較しやすいです)
+  { id: 'dbg_beam', label: '5. 純粋ビーム (幅50)', 
+    func: (s,g,gr,p, cb) => solveBeamSearch(s,g,gr,p, { beamWidth:50, onProgress: cb }) },
 
   // 6. SG排除Vit
   { id: 'dbg_vit_sg_excl', label: '6. SG排除・純粋Viterbi', 
@@ -5120,32 +5122,38 @@ const ALGO_CONFIG = [
     func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { ignoreStart:true, ignoreGoalEdge: true, tryUseCache: true, onProgress: cb }) 
   },
 
-  // --- 新規追加: 幾何学探索 (APIなし) ---
+  // --- 幾何学探索 (APIなし) ---
+  // Viterbi系(8,10)は候補数(=5)が上限です
   { id: 'geo_vit_proj', label: '8. 幾何Viterbi (射影)', 
     func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: false, beamWidth: 0, doRerank: false }) 
   },
-  { id: 'geo_beam_proj', label: '9. 幾何Beam(幅5) (射影)', 
-    func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: false, beamWidth: 5, doRerank: false }) 
+  // ★修正: 幅5 -> 幅50
+  { id: 'geo_beam_proj', label: '9. 幾何Beam(幅50) (射影)', 
+    func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: false, beamWidth: 50, doRerank: false }) 
   },
   { id: 'geo_vit_pyth', label: '10. 幾何Viterbi (三平方)', 
     func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: true, beamWidth: 0, doRerank: false }) 
   },
-  { id: 'geo_beam_pyth', label: '11. 幾何Beam(幅5) (三平方)', 
-    func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: true, beamWidth: 5, doRerank: false }) 
+  // ★修正: 幅5 -> 幅50
+  { id: 'geo_beam_pyth', label: '11. 幾何Beam(幅50) (三平方)', 
+    func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: true, beamWidth: 50, doRerank: false }) 
   },
 
-  // --- 新規追加: 幾何学 + 再ランク (API 20回) ---
+  // --- 幾何学 + 再ランク (API 20回) ---
+  // Viterbi系(12,14)は候補数(=5)が上限です
   { id: 'rerank_vit_proj', label: '12. 再ランク (8:幾何Vit/射影)', 
     func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: false, beamWidth: 0, doRerank: true }) 
   },
+  // ★修正: 幅5 -> 幅50
   { id: 'rerank_beam_proj', label: '13. 再ランク (9:幾何Beam/射影)', 
-    func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: false, beamWidth: 5, doRerank: true }) 
+    func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: false, beamWidth: 50, doRerank: true }) 
   },
   { id: 'rerank_vit_pyth', label: '14. 再ランク (10:幾何Vit/三平方)', 
     func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: true, beamWidth: 0, doRerank: true }) 
   },
+  // ★修正: 幅5 -> 幅50 (これが本命)
   { id: 'rerank_beam_pyth', label: '15. 再ランク (11:幾何Beam/三平方)', 
-    func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: true, beamWidth: 5, doRerank: true }) 
+    func: (s,g,gr,p,prog) => runGeometricWrapper(s,g,gr,p, { usePythagoras: true, beamWidth: 50, doRerank: true }) 
   },
 ];
   
