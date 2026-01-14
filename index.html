@@ -3076,31 +3076,26 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
   if (!Array.isArray(resultList) || !resultList.length) return;
   if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
 
-  // スコア順にソート
   const sorted = resultList.slice().sort((a, b) => {
     return (a.score ?? 999999) - (b.score ?? 999999);
   });
 
   let outputList = sorted;
 
-  // ★修正ポイント: 全件出力(isFullOutput)の対象アルゴリズムを追加
-  // "geo_" (8-11番) や "rerank_" (12-15番) も対象にする
+  // ★修正: 全件出力対象に幾何学系(geo_, rerank_)を追加
   const isFullOutput = (
     algoCode === 'bruteforce' || 
     algoCode === 'dbg_bf' || 
     algoCode === 'linear' || 
     algoCode === 'dbg_linear' ||
-    algoCode.startsWith('geo_') ||    // ★追加: 幾何学探索(8-11)
-    algoCode.startsWith('rerank_')    // ★追加: 再ランク(12-15)
+    algoCode.startsWith('geo_') ||    // 8-11番
+    algoCode.startsWith('rerank_')    // 12-15番
   );
 
   if (!isFullOutput) {
-    // それ以外の既存アルゴリズム(2-7)は、画面が埋まらないようTop3のままにする
-    // (必要であればここも全件にしてOKです)
-    outputList = sorted.slice(0, 3);
+    outputList = sorted.slice(0, 3); // 既存アルゴリズムは3件のまま
   }
 
-  // 理想値を取得
   const ideals = (typeof getIdealPerLegs === 'function') ? getIdealPerLegs() : { idealDistPerLeg: 0 };
 
   outputList.forEach((r, idx)=>{
@@ -3126,33 +3121,26 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       bfRank: (r.bfRank ?? '-'), 
       score: (typeof r.score === 'number') ? r.score.toFixed(4) : r.score,
       rawScore: (r.rawScore != null) ? Number(r.rawScore).toFixed(4) : '',
-      
       sigmaDist: (typeof sigmaDist === 'number') ? sigmaDist.toFixed(4) : '',
       sigmaTime: (typeof sigmaTime === 'number') ? sigmaTime.toFixed(4) : '',
       sigmaEnergy: (typeof sigmaEnergy === 'number') ? sigmaEnergy.toFixed(4) : '',
-      
       timeMs: elapsedMs ?? 0,
       orsCalls: orsCalls ?? 0,
       overpassCalls: overpassCalls ?? 0,
-      
       idealDistKm: ideals.idealDistPerLeg,
-
       poiNames,
       poiIds,
       poiLatLngs
     });
   });
-  
   console.log(`[pushAlgoResults] ${algoCode}: ${outputList.length} rows added.`);
 }
   
 /* ==========================================================
-   【修正版】結果表示関数 (改行・整形対応)
+   【修正版】結果リスト表示 (全件表示対応)
    ========================================================== */
 function showAlgoListInPanel(panel, list, algoCode){
   if (!panel) return;
-  // 進捗バー等の直後に改行を入れる
-  // panel.textContent += '\n'; 
 
   if (!Array.isArray(list) || !list.length){
     panel.textContent += '(候補なし)\n';
@@ -3165,12 +3153,13 @@ function showAlgoListInPanel(panel, list, algoCode){
     return sA - sB;
   });
 
-  const top = sorted.slice(0, 3);
+  // ★修正: 上位3件制限を撤廃 (安全のため最大50件程度で切るが、基本全件)
+  const top = sorted.slice(0, 50);
 
   top.forEach((r, idx)=>{
     const rank = idx + 1;
-    const score    = r.score    ?? null;
-    const stats    = r.stats || {};
+    const score     = r.score     ?? null;
+    const stats     = r.stats || {};
     const sigDist = (stats.dist && stats.dist.length) ? stdDev(stats.dist) : null;
     const sigTime = (stats.time && stats.time.length) ? stdDev(stats.time) : null;
     const sigEn   = (stats.energy && stats.energy.length) ? stdDev(stats.energy) : null;
@@ -4941,7 +4930,7 @@ async function finalizeAndRank(start, goal, candidates, idealDist, profile, opti
 function solveGeometricGeneric(start, goal, groups, options = {}) {
   const usePythagoras = options.usePythagoras === true;
   const beamWidth = options.beamWidth || 0;
-  // ★ TopN の受け取りを確実にする
+  // ★修正: 指定された件数(20件など)を優先
   const topN = (options.topN !== undefined) ? options.topN : 5;
   
   const uiW = document.getElementById('geoWeight');
@@ -4959,6 +4948,7 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
     const pois = Array.isArray(groupData.pois) ? groupData.pois : (Array.isArray(groupData) ? groupData : []);
     const nextPathsCandidates = [];
 
+    // トリガー位置取得 (安全策付き)
     let triggerCumD = 0;
     if (groupData.rest && Number.isFinite(groupData.rest.routeD)) {
         triggerCumD = groupData.rest.routeD;
@@ -4972,7 +4962,6 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
       
       let currentCumD = 0; 
       let perpM = 0;       
-
       const hasProj = (p._proj && Number.isFinite(p._proj.cumD));
       
       if (usePythagoras || !hasProj) {
@@ -5015,7 +5004,6 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
           }
         }
       }
-
       if (beamWidth === 0 && bestForThisPoi.parent) {
         nextPathsCandidates.push({
           picks: [...bestForThisPoi.parent.picks, p],
@@ -5025,7 +5013,6 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
         });
       }
     }
-
     if (beamWidth > 0) {
       nextPathsCandidates.sort((a, b) => a.cost - b.cost);
       currentPaths = nextPathsCandidates.slice(0, beamWidth);
@@ -5053,8 +5040,7 @@ function solveGeometricGeneric(start, goal, groups, options = {}) {
   });
 
   results.sort((a, b) => a.geoScore - b.geoScore);
-  
-  // ★ここで確実に topN 件返す
+  // ★修正: 指定された topN (20件) 分を返す
   return results.slice(0, topN);
 }
 
@@ -5205,7 +5191,6 @@ async function runAlgoCompareDebug(){
       if (cfg.type === 'linear') {
         const linGroups = topPoisPerTriggerForLinear(5);
         list = buildLinearAlgoRows(start, goal, linGroups);
-        // 直線はAPIを使わないのでダミーデータ
         list._breakdown = { searchOrs:0, drawOrs:0, searchTime:0, drawTime:0, searchWait:0, drawWait:0 };
       } else {
         list = await cfg.func(start, goal, targetGroups, profile, onProgress);
@@ -5220,16 +5205,13 @@ async function runAlgoCompareDebug(){
         attachBfRank(list, bfRankMap);
       }
 
-      // --- 内訳表示ロジック ---
+      // --- 内訳表示 ---
       const bd = list._breakdown || { searchOrs:0, drawOrs:0, searchTime:0, drawTime:0, searchWait:0, drawWait:0 };
-      
-      // 合計値
       const totalOrs  = bd.searchOrs + bd.drawOrs;
       const totalWait = bd.searchWait + bd.drawWait;
-      const totalTime = bd.searchTime + bd.drawTime; // 経過時間の合計
-      const activeTime = Math.max(0, totalTime - totalWait); // 実処理時間
+      const totalTime = bd.searchTime + bd.drawTime; 
+      const activeTime = Math.max(0, totalTime - totalWait); 
 
-      // 秒変換
       const sTotal  = (totalTime / 1000).toFixed(1);
       const sActive = (activeTime / 1000).toFixed(1);
       const sWait   = (totalWait / 1000).toFixed(1);
@@ -5239,7 +5221,6 @@ async function runAlgoCompareDebug(){
 
       if (bd.isCached) {
           logStr += ` [Cache利用]`;
-          // キャッシュ利用時は、今回の実測時間(=描画時間)も併記すると親切
           const realSec = (bd.drawTime / 1000).toFixed(1);
           logStr += ` (今回実測: ${realSec}s)`;
       }
@@ -5250,7 +5231,8 @@ async function runAlgoCompareDebug(){
       pushAlgoResultsForCsv(cfg.id, cfg.label, list, totalTime, totalOrs, 0);
 
       if (list.length) {
-        showAlgoListInPanel(panel, list.slice(0, 5), cfg.id);
+        // ★修正: ここで slice(0, 5) していたのを削除し、全件(またはshowAlgoListInPanel内の制限)に従う
+        showAlgoListInPanel(panel, list, cfg.id);
       } else {
         panel.textContent += '(候補なし)\n';
       }
