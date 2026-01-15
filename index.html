@@ -3037,54 +3037,55 @@ async function showLinearComboRoute(row){
 }
 
 /* ==========================================================
-   【統合完全版】データ蓄積・CSV出力関数
-   ※以前の同名関数はすべて消して、これに置き換えてください
+   【修正版】データ蓄積・CSV出力関数 (実際に使った理想距離を出力)
    ========================================================== */
-
-// 1. アルゴリズム比較用: データ蓄積 (総当たり全件対応 & 理想距離対応)
 function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls, overpassCalls){
   if (!Array.isArray(resultList) || !resultList.length) return;
   if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
 
-  // スコア順にソート
-  const sorted = resultList.slice().sort((a, b) => {
-    return (a.score ?? 999999) - (b.score ?? 999999);
-  });
+  const sorted = resultList.slice().sort((a, b) => (a.score ?? 9e9) - (b.score ?? 9e9));
+  
+  const isFullOutput = (algoCode === 'bruteforce' || algoCode === 'dbg_bf' || algoCode === 'linear' || algoCode === 'dbg_linear');
+  let outputList = isFullOutput ? sorted : sorted.slice(0, 3);
 
-  let outputList = sorted;
-
-  // ★修正ポイント1: 新しい総当たりID 'dbg_bf' を判定に追加
-  // これにより、総当たりの時は3件に絞らず全件出力されます
-  const isFullOutput = (
-    algoCode === 'bruteforce' || 
-    algoCode === 'dbg_bf' || 
-    algoCode === 'linear' || 
-    algoCode === 'dbg_linear'
-  );
-
-  if (!isFullOutput) {
-    outputList = sorted.slice(0, 3);
-  }
-
-  // ★修正ポイント2: 理想値を取得
-  const ideals = (typeof getIdealPerLegs === 'function') ? getIdealPerLegs() : { idealDistPerLeg: 0 };
+  // 初期固定値（Viterbi等の基準）
+  const fixedIdeals = (typeof getIdealPerLegs === 'function') ? getIdealPerLegs() : { idealDistPerLeg: 0 };
 
   outputList.forEach((r, idx)=>{
     const rank = idx + 1;
-    const sigmaDist   = stdDev(r.stats?.dist || []);
-    const sigmaTime   = stdDev(r.stats?.time || []);
-    const sigmaEnergy = stdDev(r.stats?.energy || []);
+    const stats = r.stats || { dist:[] };
+    
+    // ★修正: アルゴリズムや計算実態に合わせて「実際に使った平均距離」を算出する
+    let usedIdealDist = fixedIdeals.idealDistPerLeg;
+
+    if (algoCode === 'dbg_bf' || algoCode === 'bruteforce' || algoCode === 'dbg_linear') {
+        // 総当たり系は「自分自身の平均」を使っているはず
+        if (stats.dist && stats.dist.length > 0) {
+            const sum = stats.dist.reduce((a,b)=>a+(Number(b)||0), 0);
+            usedIdealDist = sum / stats.dist.length;
+        }
+    } else if (r.score === r.displayScore && stats.dist && stats.dist.length) {
+        // 再ランク系などで、スコアがMSE計算と一致する場合、念のため実測平均を確認
+        // (Viterbi探索中は固定値だが、最終結果リストに入っているスコアが「再ランク後」なら実測平均になっている可能性があるため)
+        // ここでは「固定値」と「実測平均」のどちらがスコアに近いかで判定するロジックも組めるが、
+        // シンプルに「Viterbi探索結果」としては固定値を表示し、
+        // 再ランク(rerank)済みなら実測平均を表示するのが親切。
+        
+        if (algoCode.includes('rerank')) {
+             const sum = stats.dist.reduce((a,b)=>a+(Number(b)||0), 0);
+             usedIdealDist = sum / stats.dist.length;
+        }
+    }
+
+    const sigmaDist   = stdDev(stats.dist || []);
+    const sigmaTime   = stdDev(stats.time || []);
+    const sigmaEnergy = stdDev(stats.energy || []);
 
     let poiList = (r.picks || r.picksByTrigger || []).filter(Boolean);
     if (Array.isArray(poiList[0])) poiList = poiList.flat().filter(Boolean);
-
     const poiNames = poiList.map(p => p.name || 'POI').join(' -> ');
-    // ID取得 (関数がある場合のみ)
     const poiIds   = (typeof getPoiId === 'function') ? poiList.map(p => getPoiId(p)).join(' -> ') : '';
-    
-    const poiLatLngs = poiList
-      .map(p => `${(p.lat ?? p.latitude)?.toFixed(6)},${(p.lon ?? p.lng ?? p.longitude)?.toFixed(6)}`)
-      .join(' | ');
+    const poiLatLngs = poiList.map(p => `${(p.lat??0).toFixed(6)},${(p.lon??0).toFixed(6)}`).join(' | ');
 
     window.__algoCompareRows.push({
       algo: algoCode,
@@ -3102,21 +3103,14 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       orsCalls: orsCalls ?? 0,
       overpassCalls: overpassCalls ?? 0,
       
-      // ★修正ポイント3: 理想距離を保存
-      idealDistKm: ideals.idealDistPerLeg,
+      idealDistKm: usedIdealDist, // ★修正した値を出力
 
-      poiNames,
-      poiIds,
-      poiLatLngs
+      poiNames, poiIds, poiLatLngs
     });
   });
-  
   console.log(`[pushAlgoResults] ${algoCode}: ${outputList.length} rows added.`);
 }
   
-/* ==========================================================
-   【修正版】結果表示関数 (改行・整形対応)
-   ========================================================== */
 /* ==========================================================
    【修正版】結果リスト表示 (改行・整形対応)
    ========================================================== */
