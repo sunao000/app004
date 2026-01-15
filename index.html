@@ -2859,19 +2859,27 @@ async function viterbiRouteCost(p1, p2, profile){
 }
 
 /* ==========================================================
-   【変更版】総当たり (動的理想距離を使用)
+   【修正版】総当たり (確認ダイアログ廃止・リミット緩和版)
    ========================================================== */
 async function runBruteforceOnce(start, goal, restGroups, profile, onProgress){
   const sourceGroups = (restGroups && restGroups.length) ? restGroups : window.restGroups;
   if (!sourceGroups || !sourceGroups.length) throw new Error('RestGroups not found');
   const poiGroups = sourceGroups.map(g => Array.isArray(g.pois)?g.pois : (Array.isArray(g)?g:[]));
+  
+  // POI件数上限の設定値を取得
   const perGroupLimit = Math.max(1, Number($('poiLimit').value) || 5);
   const combos = enumerateCombinations(poiGroups, perGroupLimit);
+  
   if (!combos.length) throw new Error('No combinations');
 
-  const HARD_LIMIT = 200; 
+  // ★修正: リミットを200から大幅に増やし、confirm（確認画面）を削除
+  // 実験用なので、多少多くても止まらずに実行するようにします。
+  const HARD_LIMIT = 20000; 
   if (combos.length > HARD_LIMIT) {
-    if (!confirm(`総当たり ${combos.length}件。実行しますか？`)) throw new Error('Cancelled');
+    // さすがに多すぎる場合のみエラーで止める（ブラウザクラッシュ防止）
+    throw new Error(`組み合わせが多すぎます (${combos.length}件)。POI件数上限を減らしてください。`);
+  } else if (combos.length > 1000) {
+    console.warn(`[総当たり] 組み合わせ数が ${combos.length} 件あります。時間がかかりますが実行します。`);
   }
 
   // ※ここは参照されなくなるが、他の指標用に残しておく
@@ -2888,15 +2896,19 @@ async function runBruteforceOnce(start, goal, restGroups, profile, onProgress){
     const picks = cmb.filter(Boolean);
     const wps = [start, ...picks, goal].map(p => ({ lat: p.lat, lon: p.lon, name: p.name || 'POI' }));
     try {
-      await new Promise(r => setTimeout(r, 1500)); 
+      // API負荷軽減のためのウェイト（必要に応じて調整してください）
+      await new Promise(r => setTimeout(r, 200)); 
+      
       const {feature, stats} = await routeLegStatsForWaypoints(wps, profile);
       
-      // ★変更点: 第2引数は無視されるので、nullでも良いが、関数内で動的に計算される
+      // 動的理想距離でのMSE計算
       const distScore = (typeof calcDistMseFromFeature === 'function') 
         ? calcDistMseFromFeature(feature, null) : 0;
         
       results.push({ score: distScore, rawScore: distScore, feature, picks, picksByTrigger: cmb, stats });
-    } catch (e){}
+    } catch (e){
+        // 個別のルート計算失敗は無視して次へ
+    }
   }
 
   results.sort((a, b) => (a.score ?? 1e9) - (b.score ?? 1e9));
