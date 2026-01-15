@@ -263,8 +263,8 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 
 <script>
 /* ====== 設定 ====== */
-const ORS_KEY  = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9'; 
-// const ORS_KEY  = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjE0YTgxN2M5OWZmNjQ4MmNiMTZkYTk3YWFkMDI2MDAxIiwiaCI6Im11cm11cjY0In0=';
+// const ORS_KEY  = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9'; 
+const ORS_KEY  = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjE0YTgxN2M5OWZmNjQ4MmNiMTZkYTk3YWFkMDI2MDAxIiwiaCI6Im11cm11cjY0In0=';
 const ORS_ROOT = 'https://api.openrouteservice.org';
 
 const ORS_INTERVAL = 2500;
@@ -2874,7 +2874,7 @@ async function runBruteforceOnce(start, goal, restGroups, profile, onProgress){
 
   // ★修正: リミットを200から大幅に増やし、confirm（確認画面）を削除
   // 実験用なので、多少多くても止まらずに実行するようにします。
-  const HARD_LIMIT = 20000; 
+  const HARD_LIMIT = 1000; 
   if (combos.length > HARD_LIMIT) {
     // さすがに多すぎる場合のみエラーで止める（ブラウザクラッシュ防止）
     throw new Error(`組み合わせが多すぎます (${combos.length}件)。POI件数上限を減らしてください。`);
