@@ -3384,7 +3384,97 @@ async function finalizeAndRank(start, goal, candidates, idealDist, profile, opti
    【整理版】アルゴリズム比較・統合ロジック
    UI/機能はそのままに、共通処理をまとめて記述量を削減
    ===================================================================== */
+/* ====== キャッシュシステム (重要: これを消すと動かなくなります) ====== */
 
+// すでに計算した区間データを保存する辞書
+const __sharedLegCache = new Map();
+
+// キャッシュのキーを作る関数（座標を丸めて同一判定しやすくする）
+function getLegCacheKey(from, to, profile) {
+    const f = n => Number(n).toFixed(5); // 1m単位の精度で丸める
+    const fLat = from.lat ?? from.latitude ?? from.y;
+    const fLon = from.lon ?? from.lng ?? from.longitude ?? from.x;
+    const tLat = to.lat ?? to.latitude ?? to.y;
+    const tLon = to.lon ?? to.lng ?? to.longitude ?? to.x;
+    
+    return `${profile}|${f(fLat)},${f(fLon)}|${f(tLat)},${f(tLon)}`;
+}
+
+// キャッシュ対応API呼び出し
+async function calcLegCostWithApi(from, to, profile){
+  if (!from || !to) throw new Error('calcLegCostWithApi: from/to が不正です');
+
+  const cacheKey = getLegCacheKey(from, to, profile);
+  if (__sharedLegCache.has(cacheKey)) {
+      return __sharedLegCache.get(cacheKey);
+  }
+
+  const t0 = performance.now();
+  
+  const fromLat = from.lat ?? from.latitude ?? from.y;
+  const fromLon = from.lon ?? from.lng ?? from.longitude ?? from.x;
+  const toLat   = to.lat   ?? to.latitude   ?? to.y;
+  const toLon   = to.lon   ?? to.lng ?? to.longitude    ?? to.x;
+  
+  const fromId   = (typeof getPoiId === 'function') ? getPoiId(from) : 'start';
+  const toId     = (typeof getPoiId === 'function') ? getPoiId(to) : 'end';
+  const fromName = from.name || from.label || `(${fromId})`;
+  const toName   = to.name   || to.label   || `(${toId})`;
+
+  const wps = [ { lat: fromLat, lon: fromLon }, { lat: toLat, lon: toLon } ];
+  const ideals = (typeof getIdealPerLegs === 'function') ? getIdealPerLegs() : { idealDistPerLeg: 0 };
+
+  try {
+    const out = await routeLegStatsForWaypoints(wps, profile);
+    const elapsedMs = Math.round(performance.now() - t0);
+
+    const summary = out?.feature?.properties?.summary || {};
+    const distKm  = (Number(summary.distance) || 0) / 1000;
+    const timeMin = (Number(summary.duration) || 0) / 60;
+
+    // エッジログ記録
+    if (window.__collectViterbiEdges) {
+      window.__viterbiAllEdgeRows = window.__viterbiAllEdgeRows || [];
+      window.__viterbiAllEdgeRows.push({
+        fromId, toId, fromName, toName,
+        fromLat, fromLon, toLat, toLon,
+        distKm, timeMin, 
+        profile,
+        ms: elapsedMs,
+        ok: true,
+        errMsg: '',
+        idealDistKm: ideals.idealDistPerLeg
+      });
+    }
+
+    const result = { 
+        total: distKm, distKm, timeMin, 
+        rawFeature: out.feature,
+        rawStats: out.stats,
+        _costMs: elapsedMs
+    };
+
+    __sharedLegCache.set(cacheKey, result);
+    return result;
+
+  } catch (e) {
+    const errMs = Math.round(performance.now() - t0);
+    if (window.__collectViterbiEdges) {
+      window.__viterbiAllEdgeRows = window.__viterbiAllEdgeRows || [];
+      window.__viterbiAllEdgeRows.push({
+        fromId, toId, fromName, toName,
+        fromLat, fromLon, toLat, toLon,
+        distKm: '', timeMin: '', 
+        profile,
+        ms: errMs,
+        ok: false,
+        errMsg: String(e?.message || e),
+        idealDistKm: ideals.idealDistPerLeg
+      });
+    }
+    throw e;
+  }
+}
 /* ===== 【修正版】アルゴリズム定義 (整理・削除済み) ===== */
 const ALGO_CONFIG = [
   // 1. 総当たり (基準となる正解データ)
@@ -3883,98 +3973,6 @@ function autoSetManualComparison(bfList, vitList) {
             <span style="color:#aa0000">■ プランB: Viterbi 1位</span>
         </div>`;
     }
-}
-
-/* ====== キャッシュシステム (重要: これを消すと動かなくなります) ====== */
-
-// すでに計算した区間データを保存する辞書
-const __sharedLegCache = new Map();
-
-// キャッシュのキーを作る関数（座標を丸めて同一判定しやすくする）
-function getLegCacheKey(from, to, profile) {
-    const f = n => Number(n).toFixed(5); // 1m単位の精度で丸める
-    const fLat = from.lat ?? from.latitude ?? from.y;
-    const fLon = from.lon ?? from.lng ?? from.longitude ?? from.x;
-    const tLat = to.lat ?? to.latitude ?? to.y;
-    const tLon = to.lon ?? to.lng ?? to.longitude ?? to.x;
-    
-    return `${profile}|${f(fLat)},${f(fLon)}|${f(tLat)},${f(tLon)}`;
-}
-
-// キャッシュ対応API呼び出し
-async function calcLegCostWithApi(from, to, profile){
-  if (!from || !to) throw new Error('calcLegCostWithApi: from/to が不正です');
-
-  const cacheKey = getLegCacheKey(from, to, profile);
-  if (__sharedLegCache.has(cacheKey)) {
-      return __sharedLegCache.get(cacheKey);
-  }
-
-  const t0 = performance.now();
-  
-  const fromLat = from.lat ?? from.latitude ?? from.y;
-  const fromLon = from.lon ?? from.lng ?? from.longitude ?? from.x;
-  const toLat   = to.lat   ?? to.latitude   ?? to.y;
-  const toLon   = to.lon   ?? to.lng ?? to.longitude    ?? to.x;
-  
-  const fromId   = (typeof getPoiId === 'function') ? getPoiId(from) : 'start';
-  const toId     = (typeof getPoiId === 'function') ? getPoiId(to) : 'end';
-  const fromName = from.name || from.label || `(${fromId})`;
-  const toName   = to.name   || to.label   || `(${toId})`;
-
-  const wps = [ { lat: fromLat, lon: fromLon }, { lat: toLat, lon: toLon } ];
-  const ideals = (typeof getIdealPerLegs === 'function') ? getIdealPerLegs() : { idealDistPerLeg: 0 };
-
-  try {
-    const out = await routeLegStatsForWaypoints(wps, profile);
-    const elapsedMs = Math.round(performance.now() - t0);
-
-    const summary = out?.feature?.properties?.summary || {};
-    const distKm  = (Number(summary.distance) || 0) / 1000;
-    const timeMin = (Number(summary.duration) || 0) / 60;
-
-    // エッジログ記録
-    if (window.__collectViterbiEdges) {
-      window.__viterbiAllEdgeRows = window.__viterbiAllEdgeRows || [];
-      window.__viterbiAllEdgeRows.push({
-        fromId, toId, fromName, toName,
-        fromLat, fromLon, toLat, toLon,
-        distKm, timeMin, 
-        profile,
-        ms: elapsedMs,
-        ok: true,
-        errMsg: '',
-        idealDistKm: ideals.idealDistPerLeg
-      });
-    }
-
-    const result = { 
-        total: distKm, distKm, timeMin, 
-        rawFeature: out.feature,
-        rawStats: out.stats,
-        _costMs: elapsedMs
-    };
-
-    __sharedLegCache.set(cacheKey, result);
-    return result;
-
-  } catch (e) {
-    const errMs = Math.round(performance.now() - t0);
-    if (window.__collectViterbiEdges) {
-      window.__viterbiAllEdgeRows = window.__viterbiAllEdgeRows || [];
-      window.__viterbiAllEdgeRows.push({
-        fromId, toId, fromName, toName,
-        fromLat, fromLon, toLat, toLon,
-        distKm: '', timeMin: '', 
-        profile,
-        ms: errMs,
-        ok: false,
-        errMsg: String(e?.message || e),
-        idealDistKm: ideals.idealDistPerLeg
-      });
-    }
-    throw e;
-  }
 }
 
 // 互換性維持（古いコードがこの名前で呼んでも動くようにする）
