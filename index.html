@@ -2043,8 +2043,8 @@ async function viterbiRouteCost(p1, p2, profile){
 }
 
 /* ==========================================================
-   【総当たり - 時間計測対応版】
-   ※ APIの待機時間(Wait)と実行時間(Total)を正確に計測して返す
+   【修正版】総当たり (Brute Force)
+   ※ スコア(MSE)計算を強化し、関数が見つからない場合でも自前で計算する
    ========================================================== */
 async function runBruteforceOnce(start, goal, restGroups, profile, onProgress){
   const sourceGroups = (restGroups && restGroups.length) ? restGroups : window.restGroups;
@@ -2065,9 +2065,8 @@ async function runBruteforceOnce(start, goal, restGroups, profile, onProgress){
 
   const results = [];
   
-  // ★計測開始
+  // 計測開始
   const tStart = performance.now();
-  // グローバルのAPI使用状況カウンターから開始時の値を記録
   const orsStart = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
   const waitStart = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
 
@@ -2077,40 +2076,83 @@ async function runBruteforceOnce(start, goal, restGroups, profile, onProgress){
     const picks = cmb.filter(Boolean);
     const wps = [start, ...picks, goal].map(p => ({ lat: p.lat, lon: p.lon, name: p.name || 'POI' }));
     try {
-      // API負荷軽減のためのウェイト（API_USED.waitTotalには加算されない手動ウェイト）
-      // ※ここはAPI制限待ちではないのでwaitTotalには含めず、純粋な実行時間の一部とみなします
       await new Promise(r => setTimeout(r, 200)); 
       
       const {feature, stats} = await routeLegStatsForWaypoints(wps, profile);
       
-      // 動的理想距離でのMSE計算
-      const distScore = (typeof calcDistMseFromFeature === 'function') 
-        ? calcDistMseFromFeature(feature, null) : 0;
-        
+      // ★修正: スコア(MSE)を確実に計算する
+      let distScore = 0;
+      
+      // 1. 関数があればそれを使う
+      if (typeof calcDistMseFromFeature === 'function') {
+          distScore = calcDistMseFromFeature(feature, null);
+      } 
+      // 2. なければ stats から計算する (フォールバック)
+      else if (stats && stats.dist && stats.dist.length > 0) {
+          const dArr = stats.dist;
+          const total = dArr.reduce((a,b)=>a+(Number(b)||0), 0);
+          const mean = total / dArr.length;
+          let sumSq = 0;
+          dArr.forEach(v => { sumSq += (v - mean) ** 2; });
+          distScore = sumSq / dArr.length;
+      }
+      
+      // もし計算結果が Infinity や NaN なら、巨大な値を入れておく（0だと最優秀になってしまうため）
+      if (!Number.isFinite(distScore)) distScore = 999999;
+
       results.push({ score: distScore, rawScore: distScore, feature, picks, picksByTrigger: cmb, stats });
     } catch (e){
-        // 個別のルート計算失敗は無視して次へ
+        // 個別のルート計算失敗は無視
     }
   }
 
   results.sort((a, b) => (a.score ?? 1e9) - (b.score ?? 1e9));
-  results.forEach((r, idx) => r.bfRank = idx + 1);
+  results.forEach((r, i) => r.bfRank = i + 1);
 
-  // ★計測終了
+  // 計測終了
   const tEnd = performance.now();
   const orsEnd = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
   const waitEnd = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
 
-  // 内訳データの作成
   results._breakdown = {
       searchOrs:  orsEnd - orsStart,
-      searchWait: waitEnd - waitStart, // API制限による待機時間（再試行待ちなど）
-      searchTime: tEnd - tStart,       // 全経過時間
+      searchWait: waitEnd - waitStart,
+      searchTime: tEnd - tStart,
       drawOrs: 0, drawWait: 0, drawTime: 0,
       isCached: false
   };
 
   return results;
+}
+
+/* ==========================================================
+   【重要】スコア計算関数 (これが無いとスコアが0になります)
+   ========================================================== */
+function calcDistMseFromFeature(feature, _unusedFixedIdeal) {
+  const segments = feature?.properties?.segments || [];
+  
+  if (!segments || segments.length === 0) {
+    return Infinity;
+  }
+
+  // 1. このルート自体の総距離を計算
+  let totalKm = 0;
+  segments.forEach(seg => {
+    totalKm += (Number(seg.distance) || 0) / 1000;
+  });
+
+  // 2. 動的理想距離 (平均)
+  const dynamicIdealDist = totalKm / segments.length;
+
+  // 3. MSE計算 (分散)
+  let sumSq = 0;
+  segments.forEach(seg => {
+    const dKm = (Number(seg.distance) || 0) / 1000;
+    const diff = dKm - dynamicIdealDist;
+    sumSq += diff * diff;
+  });
+
+  return sumSq / segments.length;
 }
   
 /* ===== 【修正版】射影データ構築 ===== */
