@@ -201,8 +201,6 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   <label><input type="checkbox" id="dbg_bf" checked> 1. 総当たり (Ground Truth)</label>
   <label><input type="checkbox" id="dbg_vit_pure" checked> 2. 純粋Viterbi (高速)</label>
   <label><input type="checkbox" id="dbg_adaptive_vit" checked> 3. 適応型Viterbi (平均更新)</label>
-  <label><input type="checkbox" id="dbg_list_bf"> 4. リスト総当たり (推奨)</label>
-  <label><input type="checkbox" id="dbg_list_beam"> 5. リストビーム (大規模用)</label>
 </div>
 
 <!-- サマリー -->
@@ -2045,34 +2043,31 @@ async function viterbiRouteCost(p1, p2, profile){
 }
 
 /* ==========================================================
-   【修正版】総当たり (確認ダイアログ廃止・リミット緩和版)
+   【総当たり - 時間計測対応版】
+   ※ APIの待機時間(Wait)と実行時間(Total)を正確に計測して返す
    ========================================================== */
 async function runBruteforceOnce(start, goal, restGroups, profile, onProgress){
   const sourceGroups = (restGroups && restGroups.length) ? restGroups : window.restGroups;
   if (!sourceGroups || !sourceGroups.length) throw new Error('RestGroups not found');
   const poiGroups = sourceGroups.map(g => Array.isArray(g.pois)?g.pois : (Array.isArray(g)?g:[]));
   
-  // POI件数上限の設定値を取得
   const perGroupLimit = Math.max(1, Number($('poiLimit').value) || 5);
   const combos = enumerateCombinations(poiGroups, perGroupLimit);
   
   if (!combos.length) throw new Error('No combinations');
 
-  // ★修正: リミットを200から大幅に増やし、confirm（確認画面）を削除
-  // 実験用なので、多少多くても止まらずに実行するようにします。
   const HARD_LIMIT = 1000; 
   if (combos.length > HARD_LIMIT) {
-    // さすがに多すぎる場合のみエラーで止める（ブラウザクラッシュ防止）
     throw new Error(`組み合わせが多すぎます (${combos.length}件)。POI件数上限を減らしてください。`);
   } else if (combos.length > 1000) {
     console.warn(`[総当たり] 組み合わせ数が ${combos.length} 件あります。時間がかかりますが実行します。`);
   }
 
-  // ※ここは参照されなくなるが、他の指標用に残しておく
-  const ideals = getIdealPerLegs(); 
-
   const results = [];
+  
+  // ★計測開始
   const tStart = performance.now();
+  // グローバルのAPI使用状況カウンターから開始時の値を記録
   const orsStart = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
   const waitStart = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
 
@@ -2082,7 +2077,8 @@ async function runBruteforceOnce(start, goal, restGroups, profile, onProgress){
     const picks = cmb.filter(Boolean);
     const wps = [start, ...picks, goal].map(p => ({ lat: p.lat, lon: p.lon, name: p.name || 'POI' }));
     try {
-      // API負荷軽減のためのウェイト（必要に応じて調整してください）
+      // API負荷軽減のためのウェイト（API_USED.waitTotalには加算されない手動ウェイト）
+      // ※ここはAPI制限待ちではないのでwaitTotalには含めず、純粋な実行時間の一部とみなします
       await new Promise(r => setTimeout(r, 200)); 
       
       const {feature, stats} = await routeLegStatsForWaypoints(wps, profile);
@@ -2100,14 +2096,16 @@ async function runBruteforceOnce(start, goal, restGroups, profile, onProgress){
   results.sort((a, b) => (a.score ?? 1e9) - (b.score ?? 1e9));
   results.forEach((r, idx) => r.bfRank = idx + 1);
 
+  // ★計測終了
   const tEnd = performance.now();
   const orsEnd = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
   const waitEnd = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
 
+  // 内訳データの作成
   results._breakdown = {
       searchOrs:  orsEnd - orsStart,
-      searchWait: waitEnd - waitStart,
-      searchTime: tEnd - tStart,
+      searchWait: waitEnd - waitStart, // API制限による待機時間（再試行待ちなど）
+      searchTime: tEnd - tStart,       // 全経過時間
       drawOrs: 0, drawWait: 0, drawTime: 0,
       isCached: false
   };
@@ -2195,11 +2193,8 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
 
   const sorted = resultList.slice().sort((a, b) => (a.score ?? 9e9) - (b.score ?? 9e9));
   
-  const isFullOutput = (
-      algoCode === 'bruteforce' || algoCode === 'dbg_bf' || 
-      algoCode === 'linear' || algoCode === 'dbg_linear' ||
-      algoCode === 'dbg_list_bf'
-  );
+  // 総当たり系は全件出力、それ以外はトップ3
+  const isFullOutput = (algoCode === 'dbg_bf' || algoCode === 'bruteforce');
   let outputList = isFullOutput ? sorted : sorted.slice(0, 3);
 
   const fixedIdeals = (typeof getIdealPerLegs === 'function') ? getIdealPerLegs() : { idealDistPerLeg: 0 };
@@ -2211,10 +2206,10 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
     // 実測平均を使うアルゴリズムの判定
     let usedIdealDist = fixedIdeals.idealDistPerLeg;
     const usesDynamicMean = (
-        algoCode === 'dbg_list_bf' || algoCode === 'dbg_list_beam' ||
-        algoCode === 'dbg_bf' || algoCode === 'bruteforce' ||
-        algoCode === 'dbg_adaptive_vit' || algoCode === 'dbg_vit_pure' ||
-        algoCode.includes('rerank') || algoCode === 'dbg_beam' || algoCode.includes('linear')            
+        algoCode === 'dbg_bf' || 
+        algoCode === 'bruteforce' ||
+        algoCode === 'dbg_adaptive_vit' || 
+        algoCode === 'dbg_vit_pure' 
     );
 
     if (usesDynamicMean) {
@@ -2227,14 +2222,12 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
     const sigmaDist = stdDev(stats.dist || []);
     const sigmaTime = stdDev(stats.time || []);
 
-    // POI情報の整形
     let poiList = (r.picks || r.picksByTrigger || []).filter(Boolean);
     if (Array.isArray(poiList[0])) poiList = poiList.flat().filter(Boolean);
     const poiNames = poiList.map(p => p.name || 'POI').join(' -> ');
     const poiIds   = (typeof getPoiId === 'function') ? poiList.map(p => getPoiId(p)).join(' -> ') : '';
     const poiLatLngs = poiList.map(p => `${(p.lat??0).toFixed(6)},${(p.lon??0).toFixed(6)}`).join(' | ');
 
-    // 時間計算
     const totalTime  = elapsedMs ?? 0;
     const waitTime   = waitMs ?? 0;
     const activeTime = Math.max(0, totalTime - waitTime);
@@ -2250,7 +2243,6 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       sigmaDist: (typeof sigmaDist === 'number') ? sigmaDist.toFixed(4) : '',
       sigmaTime: (typeof sigmaTime === 'number') ? sigmaTime.toFixed(4) : '',
       
-      // ★ここに追加: 時間の内訳
       totalTimeMs:  totalTime.toFixed(0),
       waitTimeMs:   waitTime.toFixed(0),
       activeTimeMs: activeTime.toFixed(0),
@@ -3241,490 +3233,124 @@ window.drawManualComparison = async function() {
   }
 };
 /* ==========================================================
-   【完全修正版】汎用Viterbiソルバー (コスト配分ロジック実装済み)
+   【純粋Viterbi - 時間計測対応版】
+   ※ 固定された理想距離(全体平均)を目指すが、時間計測は正確に行う
    ========================================================== */
 async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
-  const T = Array.isArray(groups) ? groups.length : 0;
-  if (!T) return [];
-
-  const ignoreStart = options.ignoreStart === true;
-  const ignoreGoalInRank = options.ignoreGoalInRank === true;
-  const ignoreGoalEdge = options.ignoreGoalEdge === true;
-  const usePathAccumulation = (options.usePathAccumulation === true) && !ignoreStart;
-  const saveToCache = options.saveToCache === true;
-  const tryUseCache = options.tryUseCache === true;
-
-  const apiFunc = calcLegCostWithApi; 
-  const ideals = getIdealPerLegs();
-  const idealDistPerLeg = ideals.idealDistPerLeg; 
-  const currentCacheType = ignoreStart ? 'sg_excluded' : 'standard';
-
-  const tStart = performance.now();
-  const orsStart = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
-  const waitStart = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
-
-  let candidates = null;
-  let cachedBreakdown = null;
-
-  if (tryUseCache && window.__viterbiIntermediateCache) {
-      const c = window.__viterbiIntermediateCache;
-      if (c.type === currentCacheType) {
-          candidates = c.candidates;
-          cachedBreakdown = c.breakdown; 
-      }
-  }
-
-  if (!candidates) {
-      const mergeStats = (s1, s2) => ({
-          dist:   [...(s1?.dist||[]),   ...(s2?.dist||[])],
-          time:   [...(s1?.time||[]),   ...(s2?.time||[])]
-      });
-      const mergeCoords = (c1, c2) => {
-          if (!c1 || !c1.length) return c2 || [];
-          if (!c2 || !c2.length) return c1;
-          return c1.concat(c2.slice(1));
-      };
-      const mergeSegments = (seg1, seg2) => [...(seg1||[]), ...(seg2||[])];
-
-      let currentPaths = new Array(groups[0].length).fill(null);
-      for (let i = 0; i < groups[0].length; i++) {
-        const firstPoi = groups[0][i];
-        let initialCost = 0;
-        let accStats={dist:[],time:[]}, accCoords=[], accSegments=[];
-
-        if (!ignoreStart) {
-          try {
-            const leg = await apiFunc(start, firstPoi, profile);
-            const diff = leg.distKm - idealDistPerLeg;
-            initialCost = diff * diff; 
-            if (usePathAccumulation || saveToCache) {
-                if(leg.rawStats) accStats = leg.rawStats;
-                if(leg.rawFeature) {
-                    accCoords = leg.rawFeature.geometry.coordinates;
-                    accSegments = leg.rawFeature.properties.segments;
-                }
-            }
-          } catch(e) {}
-        }
-        currentPaths[i] = {
-          picks: [firstPoi],
-          currentCost: initialCost,
-          lastNode: firstPoi,
-          valid: true,
-          accStats, accCoords, accSegments
-        };
-      }
-
-      for (let t = 1; t < T; t++) {
-        if (options.onProgress) options.onProgress(t, T);
-        const nextGroup = groups[t];
-        const nextPaths = new Array(nextGroup.length).fill(null);
-        for (let j = 0; j < nextGroup.length; j++) {
-          const nextPoi = nextGroup[j];
-          let bestCost = Infinity, bestPath = null;
-          for (let i = 0; i < currentPaths.length; i++) {
-            const parent = currentPaths[i];
-            if (!parent || !parent.valid) continue;
-            try {
-              await new Promise(r => setTimeout(r, 20)); 
-              const leg = await apiFunc(parent.lastNode, nextPoi, profile);
-              const diff = leg.distKm - idealDistPerLeg;
-              const newCost = parent.currentCost + (diff * diff);
-              if (newCost < bestCost) {
-                bestCost = newCost;
-                bestPath = {
-                  picks: [...parent.picks, nextPoi],
-                  currentCost: newCost,
-                  lastNode: nextPoi,
-                  valid: true,
-                };
-                if (usePathAccumulation || saveToCache) {
-                   bestPath.accStats = mergeStats(parent.accStats, leg.rawStats);
-                   bestPath.accCoords = mergeCoords(parent.accCoords, leg.rawFeature?.geometry?.coordinates);
-                   bestPath.accSegments = mergeSegments(parent.accSegments, leg.rawFeature?.properties?.segments);
-                }
-              }
-            } catch (e) {}
-          }
-          nextPaths[j] = bestPath;
-        }
-        currentPaths = nextPaths;
-      }
-      candidates = currentPaths.filter(p => p && p.valid);
-  }
-
-  const tPhase1End = performance.now();
-  const orsPhase1End = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
-  const waitPhase1End = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
-
-  let phase1Breakdown = cachedBreakdown; 
-  if (!phase1Breakdown) {
-      phase1Breakdown = {
-          ors: orsPhase1End - orsStart,
-          wait: waitPhase1End - waitStart,
-          time: tPhase1End - tStart
-      };
-  }
-
-  if (saveToCache && candidates) {
-      window.__viterbiIntermediateCache = {
-          type: currentCacheType,
-          candidates: candidates,
-          breakdown: phase1Breakdown
-      };
-  }
-
-  const finalResults = [];
-  const tPhase2Start = performance.now();
-  const orsPhase2Start = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
-  const waitPhase2Start = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
-
-  if (usePathAccumulation && candidates.length > 0) {
-    for (const cand of candidates) {
-        try { 
-          const leg = await apiFunc(cand.lastNode, goal, profile);
-          
-          const mergeStats = (s1, s2) => ({
-             dist:   [...(s1?.dist||[]),   ...(s2?.dist||[])],
-             time:   [...(s1?.time||[]),   ...(s2?.time||[])]
-          });
-          const baseStats = cand.accStats || {dist:[],time:[]};
-          const baseCoords = cand.accCoords || [];
-          const baseSegs = cand.accSegments || [];
-          const finalStats = mergeStats(baseStats, leg.rawStats);
-          const finalCoords = (baseCoords.length) ? baseCoords.concat((leg.rawFeature?.geometry?.coordinates||[]).slice(1)) : leg.rawFeature?.geometry?.coordinates;
-          const finalSegments = [...baseSegs, ...(leg.rawFeature?.properties?.segments||[])];
-          let sumSq=0, count=0;
-          finalSegments.forEach(seg => {
-             const d=(Number(seg.distance)||0)/1000;
-             sumSq += Math.pow(d - idealDistPerLeg, 2);
-             count++;
-          });
-          const totalMse = (count>0) ? sumSq/count : Infinity;
-          const constructedFeature = {
-              type: "Feature", properties: { summary: { distance: finalSegments.reduce((s,x)=>s+(x.distance||0),0), duration: finalSegments.reduce((s,x)=>s+(x.duration||0),0) }, segments: finalSegments },
-              geometry: { type: "LineString", coordinates: finalCoords }
-          };
-          finalResults.push({
-             rank: 0, score: totalMse, displayScore: totalMse,
-             poi_names: cand.picks.map(p => p.name).join(' -> '),
-             poi_latlngs: cand.picks.map(p => `${p.lat},${p.lon}`).join(' | '),
-             dist: finalStats.dist, stats: finalStats,
-             picks: cand.picks, feature: constructedFeature 
-          });
-        } catch(e) { console.error(e); }
-    }
-  } 
-  else if (candidates.length > 0) {
-     if (!ignoreGoalEdge) {
-         for (const cand of candidates) {
-             try { await apiFunc(cand.lastNode, goal, profile); } catch(e) {}
-         }
-     }
-     const ranked = await finalizeAndRank(start, goal, candidates, idealDistPerLeg, profile, { 
-       includeGoalScore: !ignoreGoalInRank,
-       useAccumulatedCost: ignoreGoalInRank,
-       onlyInternal: ignoreGoalInRank 
-     });
-     ranked.forEach(r => finalResults.push(r));
-  }
-
-  finalResults.sort((a, b) => (a.score ?? 1e9) - (b.score ?? 1e9));
-  finalResults.forEach((r, idx) => r.rank = idx + 1);
-
-  const tEnd = performance.now();
-  const orsEnd = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
-  const waitEnd = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
-  const p2Ors  = orsEnd - orsPhase2Start;
-  const p2Wait = waitEnd - waitPhase2Start;
-  const p2Time = tEnd - tPhase2Start;
-
-  let finalSearchOrs, finalSearchWait, finalSearchTime;
-  let finalDrawOrs, finalDrawWait, finalDrawTime;
-
-  if (ignoreGoalInRank === true) {
-      finalSearchOrs  = phase1Breakdown.ors;
-      finalSearchWait = phase1Breakdown.wait;
-      finalSearchTime = phase1Breakdown.time;
-      finalDrawOrs  = p2Ors;
-      finalDrawWait = p2Wait;
-      finalDrawTime = p2Time;
-  } else {
-      finalSearchOrs  = phase1Breakdown.ors + p2Ors;
-      finalSearchWait = phase1Breakdown.wait + p2Wait;
-      finalSearchTime = phase1Breakdown.time + p2Time;
-      finalDrawOrs  = 0;
-      finalDrawWait = 0;
-      finalDrawTime = 0;
-  }
-
-  finalResults._breakdown = {
-      searchOrs:  finalSearchOrs,
-      searchWait: finalSearchWait,
-      searchTime: finalSearchTime,
-      drawOrs:  finalDrawOrs,
-      drawWait: finalDrawWait,
-      drawTime: finalDrawTime,
-      isCached: !!cachedBreakdown
-  };
-  return finalResults;
-}
-
-// リスト総当たり（エネルギー削除）
-async function solvelistBruteforce(start, goal, restGroups, profile, onProgress) {
-    const T = Array.isArray(restGroups) ? restGroups.length : 0;
+    const T = Array.isArray(groups) ? groups.length : 0;
     if (!T) return [];
-    const tStart = performance.now();
 
+    // ★計測開始
+    const tStart = performance.now();
+    const waitStart = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
+
+    const apiFunc = calcLegCostWithApi;
+    // 純粋Viterbiは「固定の理想距離」を使う
+    const ideals = getIdealPerLegs();
+    const idealDistPerLeg = ideals.idealDistPerLeg;
+
+    // 1. レイヤー構築
     const layers = [
         [start],
-        ...restGroups.map(g => {
+        ...groups.map(g => {
             if (Array.isArray(g)) return g;
-            if (g && Array.isArray(g.pois)) return g.pois; 
+            if (g && Array.isArray(g.pois)) return g.pois;
             return [];
         }),
         [goal]
     ];
 
-    const edgelist = []; 
-    let totalEdges = 0;
-    for(let i=0; i<layers.length-1; i++) {
-        totalEdges += layers[i].length * layers[i+1].length;
-    }
-
-    if (totalEdges === 0) return [];
-
-    let computedEdges = 0;
-    let totalApiCostMs = 0; 
-    const apiFunc = calcLegCostWithApi;
-
-    for (let i = 0; i < layers.length - 1; i++) {
-        edgelist[i] = [];
-        const froms = layers[i];
-        const tos   = layers[i+1];
-
-        for (let f = 0; f < froms.length; f++) {
-            edgelist[i][f] = [];
-            for (let t = 0; t < tos.length; t++) {
-                if (onProgress) onProgress(computedEdges, totalEdges);
-                try {
-                    await new Promise(r => setTimeout(r, 20)); 
-                    const leg = await apiFunc(froms[f], tos[t], profile);
-                    totalApiCostMs += (leg._costMs || 0);
-                    edgelist[i][f][t] = {
-                        dist: leg.distKm,
-                        time: leg.timeMin,
-                        valid: true
-                    };
-                } catch (e) {
-                    edgelist[i][f][t] = { valid: false };
-                }
-                computedEdges++;
-            }
-        }
-    }
-
-    const tPhase2Start = performance.now();
-    const results = [];
-    
-    function traverse(layerIdx, currentIndices, currentPicks, accStats) {
-        if (layerIdx === layers.length - 1) {
-            const dists = accStats.dist;
-            const n = dists.length;
-            if (n === 0) return;
-            const totalDist = dists.reduce((a,b)=>a+b, 0);
-            const idealDist = totalDist / n;
-            let sumSq = 0;
-            dists.forEach(d => {
-                const diff = d - idealDist;
-                sumSq += diff * diff;
-            });
-            const score = sumSq / n;
-
-            results.push({
-                score: score,
-                rawScore: score,
-                picks: currentPicks.slice(),
-                stats: {
-                    dist: dists.slice(),
-                    time: accStats.time.slice()
-                },
-                feature: null 
-            });
-            return;
-        }
-
-        const currentIdx = currentIndices[currentIndices.length - 1];
-        const nextLayerIdx = layerIdx + 1;
-        const nextCandidates = layers[nextLayerIdx];
-
-        for (let nextIdx = 0; nextIdx < nextCandidates.length; nextIdx++) {
-            const edge = edgelist[layerIdx][currentIdx][nextIdx];
-            if (edge && edge.valid) {
-                const nextStats = {
-                    dist: [...accStats.dist, edge.dist],
-                    time: [...accStats.time, edge.time]
-                    // energy 削除
-                };
-                const nextPicks = [...currentPicks];
-                if (nextLayerIdx > 0 && nextLayerIdx < layers.length - 1) {
-                    nextPicks.push(nextCandidates[nextIdx]);
-                }
-                traverse(nextLayerIdx, [...currentIndices, nextIdx], nextPicks, nextStats);
-            }
-        }
-    }
-    traverse(0, [0], [], { dist:[], time:[] });
-
-    results.sort((a, b) => a.score - b.score);
-    results.forEach((r, i) => r.rank = i + 1);
-
-    const tEnd = performance.now();
-    const realElapsed = tEnd - tStart;
-    const phase2Time = tEnd - tPhase2Start;
-    const theoreticalTime = totalApiCostMs + (computedEdges * 20) + phase2Time;
-    const finalDisplayTime = Math.max(realElapsed, theoreticalTime);
-
-    results._breakdown = {
-        searchOrs: computedEdges,
-        searchWait: totalApiCostMs + (computedEdges * 20), 
-        searchTime: finalDisplayTime, 
-        drawOrs: 0, drawWait: 0, drawTime: 0,
-        isCached: (realElapsed < theoreticalTime * 0.5)
-    };
-    return results;
-}
-
-// リストビーム
-async function solvelistBeam(start, goal, restGroups, profile, onProgress) {
-    const T = Array.isArray(restGroups) ? restGroups.length : 0;
-    if (!T) return [];
-    const BEAM_WIDTH = Math.pow(5, 8); 
-    const tStart = performance.now();
-    const layers = [
-        [start],
-        ...restGroups.map(g => {
-            if (Array.isArray(g)) return g;            
-            if (g && Array.isArray(g.pois)) return g.pois; 
-            return [];
-        }),
-        [goal]
-    ];
-
-    const edgelist = []; 
-    let totalEdges = 0;
-    for(let i=0; i<layers.length-1; i++) totalEdges += layers[i].length * layers[i+1].length;
-    if (totalEdges === 0) return [];
-
-    let computedEdges = 0;
-    let totalApiCostMs = 0; 
-    const apiFunc = calcLegCostWithApi;
-
-    for (let i = 0; i < layers.length - 1; i++) {
-        edgelist[i] = [];
-        const froms = layers[i];
-        const tos   = layers[i+1];
-        for (let f = 0; f < froms.length; f++) {
-            edgelist[i][f] = [];
-            for (let t = 0; t < tos.length; t++) {
-                if (onProgress) onProgress(computedEdges, totalEdges);
-                try {
-                    await new Promise(r => setTimeout(r, 20)); 
-                    const leg = await apiFunc(froms[f], tos[t], profile);
-                    totalApiCostMs += (leg._costMs || 0);
-                    edgelist[i][f][t] = {
-                        dist: leg.distKm,
-                        time: leg.timeMin,
-                        valid: true
-                    };
-                } catch (e) {
-                    edgelist[i][f][t] = { valid: false };
-                }
-                computedEdges++;
-            }
-        }
-    }
-
-    const tPhase2Start = performance.now();
-    let currentBeams = [{ 
-        currentIdx: 0, 
+    // 2. DP初期化
+    let dp = new Array(layers[0].length).fill(null).map(() => ({
+        cost: 0, 
         picks: [], 
-        stats: { dist:[], time:[] },
-        score: 0 
-    }];
-
-    for (let i = 0; i < layers.length - 1; i++) {
-        const nextCandidates = [];
-        const isLastLayer = (i === layers.length - 2); 
-
-        for (const beam of currentBeams) {
-            const currentIdx = beam.currentIdx;
-            const nextLayerLen = layers[i+1].length;
-
-            for (let nextIdx = 0; nextIdx < nextLayerLen; nextIdx++) {
-                const edge = edgelist[i][currentIdx][nextIdx];
-                if (!edge || !edge.valid) continue;
-
-                const newStats = {
-                    dist: [...beam.stats.dist, edge.dist],
-                    time: [...beam.stats.time, edge.time]
-                };
-
-                const n = newStats.dist.length;
-                const total = newStats.dist.reduce((a,b)=>a+b, 0);
-                const mean = total / n;
-                let sumSq = 0;
-                newStats.dist.forEach(d => {
-                    const diff = d - mean;
-                    sumSq += diff * diff;
-                });
-                const currentScore = sumSq / n;
-
-                const newPicks = [...beam.picks];
-                if (i > 0 && !isLastLayer) { 
-                    newPicks.push(layers[i+1][nextIdx]);
-                } else if (i === 0 && !isLastLayer) {
-                     newPicks.push(layers[i+1][nextIdx]);
-                }
-
-                nextCandidates.push({
-                    currentIdx: nextIdx,
-                    picks: newPicks,
-                    stats: newStats,
-                    score: currentScore 
-                });
-            }
-        }
-
-        nextCandidates.sort((a, b) => a.score - b.score);
-        currentBeams = nextCandidates.slice(0, BEAM_WIDTH);
-    }
-
-    const results = currentBeams.map((b, idx) => ({
-        rank: idx + 1,
-        score: b.score,
-        rawScore: b.score,
-        picks: b.picks,
-        stats: b.stats,
-        feature: null 
+        stats: { dist: [], time: [] }
     }));
 
+    let computedEdges = 0;
+    const onProgress = options.onProgress;
+
+    // 3. DP遷移
+    for (let i = 0; i < layers.length - 1; i++) {
+        const fromLayer = layers[i];
+        const toLayer = layers[i + 1];
+        const nextDp = new Array(toLayer.length).fill(null);
+
+        for (let t = 0; t < toLayer.length; t++) {
+            const toNode = toLayer[t];
+            let bestEntry = null;
+
+            for (let f = 0; f < fromLayer.length; f++) {
+                const prevEntry = dp[f];
+                if (!prevEntry) continue;
+
+                const fromNode = fromLayer[f];
+                if (onProgress) onProgress(computedEdges, 0);
+
+                try {
+                    await new Promise(r => setTimeout(r, 0));
+                    const leg = await apiFunc(fromNode, toNode, profile);
+                    computedEdges++;
+
+                    // ★純粋Viterbiのコスト: (区間距離 - 固定理想距離)^2
+                    const diff = leg.distKm - idealDistPerLeg;
+                    const legCost = diff * diff;
+                    const newCost = prevEntry.cost + legCost;
+
+                    if (bestEntry === null || newCost < bestEntry.cost) {
+                        bestEntry = {
+                            cost: newCost,
+                            stats: {
+                                dist: [...prevEntry.stats.dist, leg.distKm],
+                                time: [...prevEntry.stats.time, leg.timeMin]
+                            },
+                            picks: (i === 0) ? [] : [...prevEntry.picks, fromNode]
+                        };
+                    }
+                } catch (e) { }
+            }
+            nextDp[t] = bestEntry;
+        }
+        dp = nextDp;
+    }
+
+    // 4. 結果構築
+    const results = [];
+    dp.forEach((entry) => {
+        if (!entry) return;
+        const n = entry.stats.dist.length;
+        if (n === 0) return;
+
+        const mse = entry.cost / n; // 平均二乗誤差
+
+        results.push({
+            mse_score: mse,
+            rawScore: entry.cost,
+            score: mse,
+            picks: entry.picks,
+            stats: entry.stats,
+            feature: null
+        });
+    });
+
+    results.sort((a, b) => a.mse_score - b.mse_score);
+    results.forEach((r, i) => r.rank = i + 1);
+
+    // ★計測終了
     const tEnd = performance.now();
-    const realElapsed = tEnd - tStart;
-    const phase2Time = tEnd - tPhase2Start;
-    const theoreticalTime = totalApiCostMs + (computedEdges * 20) + phase2Time;
-    const finalDisplayTime = Math.max(realElapsed, theoreticalTime);
+    const waitEnd = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
 
     results._breakdown = {
         searchOrs: computedEdges,
-        searchWait: totalApiCostMs + (computedEdges * 20), 
-        searchTime: finalDisplayTime, 
+        searchWait: waitEnd - waitStart,
+        searchTime: tEnd - tStart,
         drawOrs: 0, drawWait: 0, drawTime: 0,
-        isCached: (realElapsed < theoreticalTime * 0.5)
+        isCached: true
     };
+
     return results;
 }
-  
+
 /**
  * 【共通ヘルパー: リランク処理】
  * 候補ルートに対して最終スコアを計算し、順位付けして返します。
@@ -3809,20 +3435,6 @@ const ALGO_CONFIG = [
     label: '3. 適応型Viterbi (平均更新)', 
     func: (s,g,gr,p,cb) => solveAdaptiveMeanViterbi(s,g,gr,p,cb) 
   },
-
-  // 4. リスト総当たり (キャッシュ効率最大・推奨)
-  { 
-    id: 'dbg_list_bf', 
-    label: '4. リスト総当たり (推奨)', 
-    func: (s,g,gr,p, cb) => solvelistBruteforce(s,g,gr,p, cb)
-  },
-
-  // 5. リストビーム (大規模探索・高速化版)
-  { 
-    id: 'dbg_list_beam', 
-    label: '5. リストビーム (大規模用)', 
-    func: (s,g,gr,p,cb) => solvelistBeam(s,g,gr,p,cb) 
-  },
 ];
   
 function isAlgoEnabled(id){
@@ -3830,8 +3442,7 @@ function isAlgoEnabled(id){
   return !!(el && el.checked);
 }
 /* ======================================================
-   【修正版】メイン実行関数
-   ※ CSV出力時に待機時間(totalWait)も渡すように変更
+   【修正版】メイン実行関数 (リスト系削除対応)
    ====================================================== */
 async function runAlgoCompareDebug(){
   const panel = $('algoComparePanel');
@@ -3853,7 +3464,7 @@ async function runAlgoCompareDebug(){
   const targetGroups = makeCandGroupsFromRestGroups(restGroups, cap);
   let bfRankMap = null; 
 
-  panel.textContent += '====== アルゴリズム比較 (詳細内訳版) ======\n\n';
+  panel.textContent += '====== アルゴリズム比較 (リスト系削除版) ======\n\n';
 
   for (const cfg of ALGO_CONFIG) {
     if (!isAlgoEnabled(cfg.id)) continue;
@@ -3862,18 +3473,14 @@ async function runAlgoCompareDebug(){
     const onProgress = (cur, total) => {
         if (total) panel.textContent += `..${cur}/${total}`; else panel.textContent += '.';
     };
-    await new Promise(r => setTimeout(r, (cfg.id==='dbg_linear' ? 100 : 2000)));
+    await new Promise(r => setTimeout(r, 200));
 
     try {
-      let list = [];
-      if (cfg.type === 'linear') {
-        list = []; 
-      } else {
-        list = await cfg.func(start, goal, targetGroups, profile, onProgress);
-      }
-
+      // 実行
+      const list = await cfg.func(start, goal, targetGroups, profile, onProgress);
       algoResults[cfg.id] = list;
 
+      // ランク付与
       if (cfg.id === 'dbg_bf') {
         bfRankMap = buildBfRankMap(list);
         attachBfRank(list, bfRankMap);
@@ -3882,7 +3489,7 @@ async function runAlgoCompareDebug(){
         attachBfRank(list, bfRankMap);
       }
 
-      // --- 内訳表示・CSV出力用データ ---
+      // 時間計算・ログ出力
       const bd = list._breakdown || { searchOrs:0, drawOrs:0, searchTime:0, drawTime:0, searchWait:0, drawWait:0 };
       const totalOrs  = bd.searchOrs + bd.drawOrs;
       const totalWait = bd.searchWait + bd.drawWait;
@@ -3903,7 +3510,6 @@ async function runAlgoCompareDebug(){
 
       panel.textContent += logStr + '\n';
       
-      // ★修正: totalWait を引数に追加
       pushAlgoResultsForCsv(cfg.id, cfg.label, list, totalTime, totalOrs, 0, totalWait);
 
       if (list.length) {
@@ -3921,9 +3527,10 @@ async function runAlgoCompareDebug(){
   const totalSec = (performance.now() - tTotalStart) / 1000;
   panel.textContent += `\n====== 完了 (Total: ${totalSec.toFixed(2)}s) ======\n`;
 
+  // リスト系削除に伴うフォールバック修正
   let vitTarget = algoResults['dbg_vit_pure'];
   if (!vitTarget || !vitTarget.length) vitTarget = algoResults['dbg_adaptive_vit'];
-  if (!vitTarget || !vitTarget.length) vitTarget = algoResults['dbg_list_beam'];
+  // (旧: リストビームへのフォールバックを削除)
   
   const bfTarget = algoResults['dbg_bf'];
 
