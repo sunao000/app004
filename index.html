@@ -2185,7 +2185,7 @@ function arterialScore(feature){
 
 /* ==========================================================
    【修正版】データ蓄積・CSV出力関数
-   ※ 待機時間(wait)と処理時間(active)も出力するように改良
+   ※ 待機時間(wait)と処理時間(active)を記録
    ========================================================== */
 function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls, overpassCalls, waitMs = 0){
   if (!Array.isArray(resultList) || !resultList.length) return;
@@ -2228,8 +2228,9 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
     const poiIds   = (typeof getPoiId === 'function') ? poiList.map(p => getPoiId(p)).join(' -> ') : '';
     const poiLatLngs = poiList.map(p => `${(p.lat??0).toFixed(6)},${(p.lon??0).toFixed(6)}`).join(' | ');
 
-    const totalTime  = elapsedMs ?? 0;
-    const waitTime   = waitMs ?? 0;
+    // 時間計算
+    const totalTime  = elapsedMs || 0;
+    const waitTime   = waitMs || 0;
     const activeTime = Math.max(0, totalTime - waitTime);
 
     window.__algoCompareRows.push({
@@ -2243,6 +2244,7 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       sigmaDist: (typeof sigmaDist === 'number') ? sigmaDist.toFixed(4) : '',
       sigmaTime: (typeof sigmaTime === 'number') ? sigmaTime.toFixed(4) : '',
       
+      // ★時間情報を文字列化して保存
       totalTimeMs:  totalTime.toFixed(0),
       waitTimeMs:   waitTime.toFixed(0),
       activeTimeMs: activeTime.toFixed(0),
@@ -2258,7 +2260,10 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
   console.log(`[pushAlgoResults] ${algoCode}: ${outputList.length} rows added.`);
 }
 
-// CSVダウンロード関数もヘッダー追加に合わせて更新
+/* ==========================================================
+   【修正版】CSVファイル生成・ダウンロード
+   ※ ヘッダーに wait_time_ms, active_time_ms を追加
+   ========================================================== */
 function downloadAlgoCompareCsv(){
   const rows = window.__algoCompareRows || [];
   if (!rows.length){
@@ -2269,8 +2274,12 @@ function downloadAlgoCompareCsv(){
     'algo', 'label', 'rank', 'bf_rank',
     'mse_score', 'raw_score',
     'sigma_dist_km', 'sigma_time_min',
-    // 時間系カラム
-    'total_time_ms', 'wait_time_ms', 'active_time_ms',
+    
+    // ★追加カラム
+    'total_time_ms', 
+    'wait_time_ms', 
+    'active_time_ms',
+    
     'ors_calls', 'overpass_calls',
     'ideal_dist_km',
     'poi_names', 'poi_ids', 'poi_latlngs'
@@ -2285,10 +2294,11 @@ function downloadAlgoCompareCsv(){
     r.rawScore ?? '',
     r.sigmaDist ?? '',
     r.sigmaTime ?? '',
-    // 時間データ
-    r.totalTimeMs ?? '',
-    r.waitTimeMs ?? '',
-    r.activeTimeMs ?? '',
+    
+    // ★時間データを出力
+    r.totalTimeMs ?? '0',
+    r.waitTimeMs ?? '0',
+    r.activeTimeMs ?? '0',
     
     r.orsCalls ?? '',
     r.overpassCalls ?? '',
@@ -3502,8 +3512,7 @@ function isAlgoEnabled(id){
   return !!(el && el.checked);
 }
 /* ======================================================
-   【完全修正版】メイン実行関数 (リスト系削除版)
-   ※ 時間計測データ(_breakdown)を確実にCSV出力関数へ渡す
+   【完全修正版】メイン実行関数 (時間計測の安全化)
    ====================================================== */
 async function runAlgoCompareDebug(){
   const panel = $('algoComparePanel');
@@ -3552,15 +3561,20 @@ async function runAlgoCompareDebug(){
       }
 
       // --- 時間計算・ログ出力 ---
-      // ここで _breakdown が無いと時間は 0 になりますが、nanにはなりません。
-      // nanになる場合は _breakdown 内のプロパティが undefined の可能性があります。
-      const bd = list._breakdown || { searchOrs:0, drawOrs:0, searchTime:0, drawTime:0, searchWait:0, drawWait:0 };
+      const bd = list._breakdown || {};
       
-      const totalOrs  = bd.searchOrs + bd.drawOrs;
+      const searchOrs = bd.searchOrs || 0;
+      const drawOrs   = bd.drawOrs || 0;
+      const totalOrs  = searchOrs + drawOrs;
       
-      // ★修正ポイント: 各値が undefined の場合に備えて || 0 をつける
-      const totalWait = (bd.searchWait || 0) + (bd.drawWait || 0);
-      const totalTime = (bd.searchTime || 0) + (bd.drawTime || 0);
+      // ★修正: 値がない場合に 0 を入れる安全策
+      const searchWait = bd.searchWait || 0;
+      const drawWait   = bd.drawWait || 0;
+      const totalWait  = searchWait + drawWait;
+
+      const searchTime = bd.searchTime || 0;
+      const drawTime   = bd.drawTime || 0;
+      const totalTime  = searchTime + drawTime;
       
       const activeTime = Math.max(0, totalTime - totalWait); 
 
@@ -3568,7 +3582,7 @@ async function runAlgoCompareDebug(){
       const sActive = (activeTime / 1000).toFixed(1);
       const sWait   = (totalWait / 1000).toFixed(1);
 
-      let logStr = `\n  API: ${totalOrs} (探${bd.searchOrs}+描${bd.drawOrs})`;
+      let logStr = `\n  API: ${totalOrs} (探${searchOrs}+描${drawOrs})`;
       logStr    += ` | Time: ${sTotal}s (処理${sActive}+待${sWait})`;
 
       if (bd.isCached) {
@@ -3578,7 +3592,7 @@ async function runAlgoCompareDebug(){
 
       panel.textContent += logStr + '\n';
       
-      // ★重要: 第7引数に totalWait を渡しています
+      // ★第7引数に totalWait を渡す
       pushAlgoResultsForCsv(cfg.id, cfg.label, list, totalTime, totalOrs, 0, totalWait);
 
       if (list.length) {
