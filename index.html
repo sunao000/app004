@@ -4011,6 +4011,82 @@ if (btnBf) {
     btnBf.onclick = downloadBruteforceCsv;
 }
 
+/* ==========================================================
+   【緊急修正】ボタンの動作を強制的に最新版に上書きする
+   ※ このコードをスクリプトの「一番最後」に追加してください
+   ========================================================== */
+
+// 1. CSVダウンロード関数を最新の定義で上書き確認
+// (wait_time_ms, active_time_ms が含まれているか確認)
+window.downloadAlgoCompareCsv = function() {
+  const rows = window.__algoCompareRows || [];
+  if (!rows.length){
+    alert('データがありません。先に「アルゴリズム比較デバッグ」を実行してください');
+    return;
+  }
+  
+  // 新しいヘッダー定義
+  const header = [
+    'algo', 'label', 'rank', 'bf_rank',
+    'mse_score', 'raw_score',
+    'sigma_dist_km', 'sigma_time_min',
+    'total_time_ms', 'wait_time_ms', 'active_time_ms', // ★ここが重要
+    'ors_calls', 'overpass_calls',
+    'ideal_dist_km',
+    'poi_names', 'poi_ids', 'poi_latlngs'
+  ];
+
+  const bodyRows = rows.map(r => [
+    r.algo ?? '',
+    `"${csvEscape(r.label ?? '')}"`,
+    r.rank ?? '',
+    r.bfRank ?? '',
+    r.score ?? '',
+    r.rawScore ?? '',
+    r.sigmaDist ?? '',
+    r.sigmaTime ?? '',
+    
+    // データがない場合は0を入れる
+    r.totalTimeMs ?? '0',
+    r.waitTimeMs ?? '0',
+    r.activeTimeMs ?? '0',
+    
+    r.orsCalls ?? '',
+    r.overpassCalls ?? '',
+    formatNum(r.idealDistKm, 3),
+    `"${csvEscape(r.poiNames ?? '')}"`,
+    `"${csvEscape(r.poiIds ?? '')}"`,
+    `"${csvEscape(r.poiLatLngs ?? '')}"`
+  ]);
+
+  const blob = buildCsvBlob(header, bodyRows);
+  saveBlob(blob, `algo_compare_${getTimeStr()}.csv`);
+  console.log('[Download] CSV saved with time columns.');
+};
+
+// 2. ボタンのイベントリスナーを強制的に再登録
+const btnRun = document.getElementById('btnAlgoCompare');
+if (btnRun) {
+    // 既存のリスナーを無効化するために、新しいプロパティとして上書き
+    btnRun.onclick = runAlgoCompareDebug;
+    console.log('[Fix] 実行ボタン(btnAlgoCompare)を更新しました');
+}
+
+const btnCsv = document.getElementById('dbgAlgoCsv');
+if (btnCsv) {
+    btnCsv.onclick = window.downloadAlgoCompareCsv;
+    console.log('[Fix] CSVボタン(dbgAlgoCsv)を更新しました');
+}
+
+const btnBf = document.getElementById('btnDownloadBruteforceCsv');
+if (btnBf) {
+    btnBf.onclick = downloadBruteforceCsv;
+    console.log('[Fix] 総当たりCSVボタンを更新しました');
+}
+
+// 3. ユーザーへの通知
+alert('修正を適用しました。\n\n手順:\n1. 「総当たりとビームサーチを比較」ボタンを押して再計算してください。\n2. 計算が終わったら「Excel用CSVダウンロード」を押してください。');
+
 // 互換性維持（古いコードがこの名前で呼んでも動くようにする）
 window.downloadViterbiEdgesCsv = downloadViterbiLogCsv;
 
