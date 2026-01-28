@@ -3213,8 +3213,8 @@ window.drawManualComparison = async function() {
   }
 };
 /* ==========================================================
-   【純粋Viterbi - 時間計測対応版】
-   ※ 固定された理想距離(全体平均)を目指すが、時間計測は正確に行う
+   【純粋Viterbi - 理論時間予測版】
+   ※ キャッシュ利用時でも、API制限(2.5秒)を考慮した理論時間を算出する
    ========================================================== */
 async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
     const T = Array.isArray(groups) ? groups.length : 0;
@@ -3225,7 +3225,6 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
     const waitStart = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
 
     const apiFunc = calcLegCostWithApi;
-    // 純粋Viterbiは「固定の理想距離」を使う
     const ideals = getIdealPerLegs();
     const idealDistPerLeg = ideals.idealDistPerLeg;
 
@@ -3301,7 +3300,7 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
         const n = entry.stats.dist.length;
         if (n === 0) return;
 
-        const mse = entry.cost / n; // 平均二乗誤差
+        const mse = entry.cost / n;
 
         results.push({
             mse_score: mse,
@@ -3316,21 +3315,33 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
     results.sort((a, b) => a.mse_score - b.mse_score);
     results.forEach((r, i) => r.rank = i + 1);
 
-    // ★計測終了
+    // ★時間計測と理論値補正
     const tEnd = performance.now();
     const waitEnd = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
+    
+    // 実測値
+    const realTime = tEnd - tStart;
+    const realWait = waitEnd - waitStart;
+
+    // 理論値: API1回あたり2.5秒(2500ms)の制限があると仮定
+    // キャッシュが効いている場合は実測が早すぎるため、理論値を採用する
+    const theoreticalWait = computedEdges * 2500; 
+    const theoreticalTime = theoreticalWait + (realTime - realWait); // 理論待機 + 純粋計算時間
+
+    // キャッシュ利用判定（実測が理論の半分以下ならキャッシュとみなす）
+    const isCached = (realTime < theoreticalTime * 0.5);
 
     results._breakdown = {
         searchOrs: computedEdges,
-        searchWait: waitEnd - waitStart,
-        searchTime: tEnd - tStart,
+        // キャッシュ時は理論値を、そうでなければ実測値を記録
+        searchWait: isCached ? theoreticalWait : realWait,
+        searchTime: isCached ? theoreticalTime : realTime,
         drawOrs: 0, drawWait: 0, drawTime: 0,
-        isCached: true
+        isCached: isCached
     };
 
     return results;
 }
-
 /**
  * 【共通ヘルパー: リランク処理】
  * 候補ルートに対して最終スコアを計算し、順位付けして返します。
@@ -3634,8 +3645,8 @@ async function runAlgoCompareDebug(){
    - 高速計算: SSE = Σ(x^2) - (Σx)^2 / n の公式を用い、累積和のみでO(1)計算する
    ========================================================== */
 /* ==========================================================
-   【適応型Viterbi (Adaptive Mean Viterbi) - 時間計測対応版】
-   ※ 実行時間と待機時間を正しく計測して返すように修正
+   【適応型Viterbi - 理論時間予測版】
+   ※ キャッシュ利用時でも、API制限(2.5秒)を考慮した理論時間を算出する
    ========================================================== */
 async function solveAdaptiveMeanViterbi(start, goal, restGroups, profile, onProgress) {
     const T = Array.isArray(restGroups) ? restGroups.length : 0;
@@ -3645,7 +3656,6 @@ async function solveAdaptiveMeanViterbi(start, goal, restGroups, profile, onProg
     const tStart = performance.now();
     const waitStart = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
 
-    // 1. 探索レイヤーの構築
     const layers = [
         [start],
         ...restGroups.map(g => {
@@ -3656,7 +3666,6 @@ async function solveAdaptiveMeanViterbi(start, goal, restGroups, profile, onProg
         [goal]
     ];
 
-    // 2. DPテーブル初期化
     let dp = new Array(layers[0].length).fill(null).map(() => ({
         cost: 0, sumD: 0, sumSq: 0,
         picks: [], stats: { dist: [], time: [] }
@@ -3691,7 +3700,6 @@ async function solveAdaptiveMeanViterbi(start, goal, restGroups, profile, onProg
                     const newSumD = prevEntry.sumD + d;
                     const newSumSq = prevEntry.sumSq + (d * d);
 
-                    // 理論準拠の適応型平均: n = 実測区間数 + 1
                     const currentN = prevEntry.stats.dist.length + 1;
                     const currentSSE = newSumSq - ((newSumD * newSumD) / currentN);
 
@@ -3720,9 +3728,7 @@ async function solveAdaptiveMeanViterbi(start, goal, restGroups, profile, onProg
         if (!entry) return;
         const n = entry.stats.dist.length;
         if (n === 0) return;
-
         const mse = entry.cost / n;
-
         results.push({
             mse_score: mse,
             rawScore: entry.cost,
@@ -3736,17 +3742,26 @@ async function solveAdaptiveMeanViterbi(start, goal, restGroups, profile, onProg
     results.sort((a, b) => a.mse_score - b.mse_score);
     results.forEach((r, i) => r.rank = i + 1);
     
-    // ★計測終了
+    // ★時間計測と理論値補正
     const tEnd = performance.now();
     const waitEnd = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
 
-    // ★ここで計算した実測値を入れる
+    // 実測値
+    const realTime = tEnd - tStart;
+    const realWait = waitEnd - waitStart;
+
+    // 理論値: API1回あたり2.5秒(2500ms)の制限があると仮定
+    const theoreticalWait = computedEdges * 2500; 
+    const theoreticalTime = theoreticalWait + (realTime - realWait); 
+
+    const isCached = (realTime < theoreticalTime * 0.5);
+
     results._breakdown = {
         searchOrs: computedEdges,
-        searchWait: waitEnd - waitStart, // 今回増えた待機時間
-        searchTime: tEnd - tStart,       // 今回かかった全時間
+        searchWait: isCached ? theoreticalWait : realWait,
+        searchTime: isCached ? theoreticalTime : realTime,
         drawOrs: 0, drawWait: 0, drawTime: 0,
-        isCached: true
+        isCached: isCached
     };
 
     return results;
