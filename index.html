@@ -2378,6 +2378,10 @@ function renderBruteforceAllResults(results){
   box.textContent = lines.join('\n');
 }
   
+/* ==========================================================
+   【修正版】総当たり全組み合わせCSVダウンロード
+   ※ 実行時間(Total)、待機時間(Wait)、処理時間(Active)カラムを追加
+   ========================================================== */
 function downloadBruteforceCsv(){
   const rows = window.__bruteforceAllResults || [];
   if (!rows.length){
@@ -2385,12 +2389,32 @@ function downloadBruteforceCsv(){
     return;
   }
 
+  // ★追加: 時間情報の取得（リスト全体のプロパティ _breakdown から）
+  // runBruteforceOnce で計算した結果を利用します
+  const bd = rows._breakdown || { searchTime:0, searchWait:0 };
+  
+  const totalTime  = bd.searchTime;
+  const totalWait  = bd.searchWait;
+  const activeTime = Math.max(0, totalTime - totalWait);
+
+  // 数値を文字列化（小数点なし）
+  const sTotal  = totalTime.toFixed(0);
+  const sWait   = totalWait.toFixed(0);
+  const sActive = activeTime.toFixed(0);
+
+  // ヘッダー定義（時間カラムを追加）
   const header = [
     'rank', 
     'mse_score',
     'raw_score',
     'sigma_dist_km', 
     'sigma_time_min',
+    
+    // ★ここに追加
+    'total_time_ms',
+    'wait_time_ms',
+    'active_time_ms',
+    
     'poi_names',
     'poi_ids',
     'poi_latlngs'
@@ -2403,13 +2427,10 @@ function downloadBruteforceCsv(){
       time: stdDev(r.stats?.time || []),
     };
     
-    // POIリストを取得
     const picks = (r.picks || r.picksByTrigger || []).filter(Boolean);
-    
-    // データ生成
     const names = picks.map(p => p.name || 'POI').join(' -> ');
     
-    // ID生成 (getPoiId関数があれば使い、なければ座標で代用)
+    // ID生成
     const ids = (typeof getPoiId === 'function') 
       ? picks.map(p => getPoiId(p)).join(' -> ')
       : picks.map(p => `${(p.lat||0).toFixed(5)},${(p.lon||0).toFixed(5)}`).join(' -> ');
@@ -2422,6 +2443,12 @@ function downloadBruteforceCsv(){
       r.rawScore ?? '',
       sig.dist.toFixed(3),
       sig.time.toFixed(3),
+      
+      // ★全行に同じ時間情報を付与（探索全体にかかった時間なので共通）
+      sTotal,
+      sWait,
+      sActive,
+
       `"${csvEscape(names)}"`,
       `"${csvEscape(ids)}"`,
       `"${csvEscape(latlngs)}"`
@@ -2429,7 +2456,7 @@ function downloadBruteforceCsv(){
   });
 
   const blob = buildCsvBlob(header, bodyRows);
-  downloadBlob(blob, 'bruteforce_all_combos.csv');
+  downloadBlob(blob, `bruteforce_all_combos_${getTimeStr()}.csv`);
 }
   
 // トリガー ↔ POI のビームを全部消す
@@ -2823,68 +2850,10 @@ function formatNum(x, digits=3){
   return n.toFixed(digits);
 }
 
-function bindViterbiEdgeUi(){
-  const btnShow = document.getElementById('btnShowViterbiEdges');
-  const btnHide = document.getElementById('btnHideViterbiEdges');
-  const btnDl   = document.getElementById('btnDlViterbiEdgesCsv');
-  const pre     = document.getElementById('viterbiEdgePanel');
-
-  if (btnShow) btnShow.onclick = () => {
-    if (pre) pre.style.display = 'block';
-    renderViterbiEdgePanel();
-  };
-  if (btnHide) btnHide.onclick = () => {
-    if (pre) pre.style.display = 'none';
-  };
-  if (btnDl) btnDl.onclick = () => downloadViterbiEdgesCsv();
-}
-
-function bindViterbiEdgeButtons(){
-  const $ = (id)=>document.getElementById(id);
-
-  const btnShow = $('btnShowViterbiEdges');
-  const btnHide = $('btnHideViterbiEdges');
-  const btnCsv  = $('btnDlViterbiEdgesCsv');
-
-  console.log('[bind] show=', !!btnShow, 'hide=', !!btnHide, 'csv=', !!btnCsv);
-
-  // 既に同じイベントを多重登録しないためのガード（任意だがおすすめ）
-  if (btnShow && !btnShow.dataset.bound) {
-    btnShow.addEventListener('click', () => {
-      console.log('[click] show viterbi edges');
-      window.__collectViterbiEdges = true;        // 収集ON（あなたの設計に合わせて）
-      renderViterbiEdgesPanel?.(true);            // UI描画（あるなら）
-    });
-    btnShow.dataset.bound = '1';
-  }
-
-  if (btnHide && !btnHide.dataset.bound) {
-    btnHide.addEventListener('click', () => {
-      console.log('[click] hide viterbi edges');
-      window.__collectViterbiEdges = false;       // 収集OFF
-      renderViterbiEdgesPanel?.(false);
-    });
-    btnHide.dataset.bound = '1';
-  }
-
-  if (btnCsv && !btnCsv.dataset.bound) {
-    btnCsv.addEventListener('click', () => {
-      console.log('[click] download viterbi edges csv');
-      downloadViterbiEdgesCsv();                  // CSV DL関数（後述の形で用意）
-    });
-    btnCsv.dataset.bound = '1';
-  }
-}
-
-// DOMができてから確実にbind
-document.addEventListener('DOMContentLoaded', bindViterbiEdgeButtons);
-
 /* =====================================================================
-   【修正・統合版】Viterbiエッジログ機能
-   ※これを元の bindViterbiEdgeButtons や renderViterbi... の代わりに使ってください
+   【完全統合版】Viterbiエッジログ UI初期化
+   ※ これ以外のイベント登録コード（bindViterbiEdgeButtonsなど）は全て削除してください
    ===================================================================== */
-
-// 1. ボタンのイベント登録（読み込み時に実行）
 window.addEventListener('DOMContentLoaded', () => {
   const btnShow = document.getElementById('btnShowViterbiEdges');
   const btnHide = document.getElementById('btnHideViterbiEdges');
@@ -2893,6 +2862,7 @@ window.addEventListener('DOMContentLoaded', () => {
   // データ収集用フラグをONに（必須）
   window.__collectViterbiEdges = true;
 
+  // 重複防止のため onclick プロパティへの代入で統一する
   if (btnShow) {
     btnShow.onclick = () => {
       const panel = document.getElementById('viterbiEdgePanel');
@@ -3442,7 +3412,8 @@ function isAlgoEnabled(id){
   return !!(el && el.checked);
 }
 /* ======================================================
-   【修正版】メイン実行関数 (リスト系削除対応)
+   【完全修正版】メイン実行関数 (リスト系削除版)
+   ※ 時間計測データ(_breakdown)を確実にCSV出力関数へ渡す
    ====================================================== */
 async function runAlgoCompareDebug(){
   const panel = $('algoComparePanel');
@@ -3482,6 +3453,7 @@ async function runAlgoCompareDebug(){
 
       // ランク付与
       if (cfg.id === 'dbg_bf') {
+        window.__bruteforceAllResults = list; // 総当たり結果保存
         bfRankMap = buildBfRankMap(list);
         attachBfRank(list, bfRankMap);
         list.sort((a, b) => (a.bfRank || 999) - (b.bfRank || 999));
@@ -3489,11 +3461,17 @@ async function runAlgoCompareDebug(){
         attachBfRank(list, bfRankMap);
       }
 
-      // 時間計算・ログ出力
+      // --- 時間計算・ログ出力 ---
+      // ここで _breakdown が無いと時間は 0 になりますが、nanにはなりません。
+      // nanになる場合は _breakdown 内のプロパティが undefined の可能性があります。
       const bd = list._breakdown || { searchOrs:0, drawOrs:0, searchTime:0, drawTime:0, searchWait:0, drawWait:0 };
+      
       const totalOrs  = bd.searchOrs + bd.drawOrs;
-      const totalWait = bd.searchWait + bd.drawWait;
-      const totalTime = bd.searchTime + bd.drawTime; 
+      
+      // ★修正ポイント: 各値が undefined の場合に備えて || 0 をつける
+      const totalWait = (bd.searchWait || 0) + (bd.drawWait || 0);
+      const totalTime = (bd.searchTime || 0) + (bd.drawTime || 0);
+      
       const activeTime = Math.max(0, totalTime - totalWait); 
 
       const sTotal  = (totalTime / 1000).toFixed(1);
@@ -3504,12 +3482,13 @@ async function runAlgoCompareDebug(){
       logStr    += ` | Time: ${sTotal}s (処理${sActive}+待${sWait})`;
 
       if (bd.isCached) {
-          const realSec = (bd.drawTime / 1000).toFixed(1);
+          const realSec = ((bd.drawTime||0) / 1000).toFixed(1);
           logStr += ` [Cache利用] (実測: ${realSec}s)`;
       }
 
       panel.textContent += logStr + '\n';
       
+      // ★重要: 第7引数に totalWait を渡しています
       pushAlgoResultsForCsv(cfg.id, cfg.label, list, totalTime, totalOrs, 0, totalWait);
 
       if (list.length) {
@@ -3527,138 +3506,14 @@ async function runAlgoCompareDebug(){
   const totalSec = (performance.now() - tTotalStart) / 1000;
   panel.textContent += `\n====== 完了 (Total: ${totalSec.toFixed(2)}s) ======\n`;
 
-  // リスト系削除に伴うフォールバック修正
   let vitTarget = algoResults['dbg_vit_pure'];
   if (!vitTarget || !vitTarget.length) vitTarget = algoResults['dbg_adaptive_vit'];
-  // (旧: リストビームへのフォールバックを削除)
   
   const bfTarget = algoResults['dbg_bf'];
 
   if (bfTarget && bfTarget.length > 0) {
       autoSetManualComparison(bfTarget, vitTarget);
       panel.textContent += '>> 手動比較ツールに「総当たり1位 vs Viterbi1位」をセットしました。\n';
-  }
-}
-  
-/* ==========================================================
-   【変更版】コスト計算 (そのルートの実測総距離を基準にする)
-   ========================================================== */
-function calcDistMseFromFeature(feature, _unusedFixedIdeal) {
-  const segments = feature?.properties?.segments || [];
-  
-  if (!segments || segments.length === 0) {
-    return Infinity;
-  }
-
-  // 1. このルート自体の総距離を計算
-  let totalKm = 0;
-  segments.forEach(seg => {
-    totalKm += (Number(seg.distance) || 0) / 1000;
-  });
-
-  // 2. このルートにおける「理想の区間距離」を動的に算出
-  //    (総距離 ÷ 区間数)
-  const dynamicIdealDist = totalKm / segments.length;
-
-  // 3. MSE計算 (各区間と、動的理想距離との差)
-  let sumSq = 0;
-  segments.forEach(seg => {
-    const dKm = (Number(seg.distance) || 0) / 1000;
-    const diff = dKm - dynamicIdealDist;
-    sumSq += diff * diff;
-  });
-
-  return sumSq / segments.length;
-}
-
-/* ====== キャッシュシステム ====== */
-// すでに計算した区間データを保存する辞書
-const __sharedLegCache = new Map();
-
-// キャッシュのキーを作る関数（座標を丸めて同一判定しやすくする）
-function getLegCacheKey(from, to, profile) {
-    const f = n => Number(n).toFixed(5); // 1m単位の精度で丸める
-    const fLat = from.lat ?? from.latitude ?? from.y;
-    const fLon = from.lon ?? from.lng ?? from.longitude ?? from.x;
-    const tLat = to.lat ?? to.latitude ?? to.y;
-    const tLon = to.lon ?? to.lng ?? to.longitude ?? to.x;
-    
-    return `${profile}|${f(fLat)},${f(fLon)}|${f(tLat)},${f(tLon)}`;
-}
-// キャッシュ対応API呼び出し
-async function calcLegCostWithApi(from, to, profile){
-  if (!from || !to) throw new Error('calcLegCostWithApi: from/to が不正です');
-
-  const cacheKey = getLegCacheKey(from, to, profile);
-  if (__sharedLegCache.has(cacheKey)) {
-      return __sharedLegCache.get(cacheKey);
-  }
-
-  const t0 = performance.now();
-  
-  const fromLat = from.lat ?? from.latitude ?? from.y;
-  const fromLon = from.lon ?? from.lng ?? from.longitude ?? from.x;
-  const toLat   = to.lat   ?? to.latitude   ?? to.y;
-  const toLon   = to.lon   ?? to.lng ?? to.longitude    ?? to.x;
-  
-  const fromId   = getPoiId(from);
-  const toId     = getPoiId(to);
-  const fromName = from.name || from.label || `(${fromId})`;
-  const toName   = to.name   || to.label   || `(${toId})`;
-
-  const wps = [ { lat: fromLat, lon: fromLon }, { lat: toLat, lon: toLon } ];
-  const ideals = (typeof getIdealPerLegs === 'function') ? getIdealPerLegs() : { idealDistPerLeg: 0 };
-
-  try {
-    const out = await routeLegStatsForWaypoints(wps, profile);
-    const elapsedMs = Math.round(performance.now() - t0);
-
-    const summary = out?.feature?.properties?.summary || {};
-    const distKm  = (Number(summary.distance) || 0) / 1000;
-    const timeMin = (Number(summary.duration) || 0) / 60;
-
-    // エッジログ記録
-    if (window.__collectViterbiEdges) {
-      window.__viterbiAllEdgeRows = window.__viterbiAllEdgeRows || [];
-      window.__viterbiAllEdgeRows.push({
-        fromId, toId, fromName, toName,
-        fromLat, fromLon, toLat, toLon,
-        distKm, timeMin, 
-        // energyKj 削除
-        profile,
-        ms: elapsedMs,
-        ok: true,
-        errMsg: '',
-        idealDistKm: ideals.idealDistPerLeg
-      });
-    }
-
-    const result = { 
-        total: distKm, distKm, timeMin, 
-        rawFeature: out.feature,
-        rawStats: out.stats,
-        _costMs: elapsedMs
-    };
-
-    __sharedLegCache.set(cacheKey, result);
-    return result;
-
-  } catch (e) {
-    const errMs = Math.round(performance.now() - t0);
-    if (window.__collectViterbiEdges) {
-      window.__viterbiAllEdgeRows = window.__viterbiAllEdgeRows || [];
-      window.__viterbiAllEdgeRows.push({
-        fromId, toId, fromName, toName,
-        fromLat, fromLon, toLat, toLon,
-        distKm: '', timeMin: '', 
-        profile,
-        ms: errMs,
-        ok: false,
-        errMsg: String(e?.message || e),
-        idealDistKm: ideals.idealDistPerLeg
-      });
-    }
-    throw e;
   }
 }
 
