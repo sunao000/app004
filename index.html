@@ -3989,6 +3989,28 @@ function autoSetManualComparison(bfList, vitList) {
     }
 }
 
+// ▼▼▼【重要】これをスクリプトの一番最後に追加してください ▼▼▼
+
+// 1. アルゴリズム比較実行ボタンを最新版に更新
+const btnRun = document.getElementById('btnAlgoCompare');
+if (btnRun) {
+    btnRun.onclick = runAlgoCompareDebug;
+    console.log('[Fix] 実行ボタンを最新の関数に更新しました');
+}
+
+// 2. CSVダウンロードボタンを最新版に更新
+const btnCsv = document.getElementById('dbgAlgoCsv');
+if (btnCsv) {
+    btnCsv.onclick = downloadAlgoCompareCsv;
+    console.log('[Fix] CSVボタンを最新の関数に更新しました');
+}
+
+// 3. 総当たりCSVボタンも更新
+const btnBf = document.getElementById('btnDownloadBruteforceCsv');
+if (btnBf) {
+    btnBf.onclick = downloadBruteforceCsv;
+}
+
 // 互換性維持（古いコードがこの名前で呼んでも動くようにする）
 window.downloadViterbiEdgesCsv = downloadViterbiLogCsv;
 
